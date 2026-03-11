@@ -109,6 +109,19 @@ impl MixState {
         Ok(())
     }
 
+    pub(crate) fn set_memory_raw(
+        &mut self,
+        address: usize,
+        word: MixWord,
+    ) -> Result<(), MixError> {
+        if address >= MEMORY_SIZE {
+            return Err(MixError::AddressOutOfRange(address as i32));
+        }
+        word.validate(self.byte_size)?;
+        self.memory[address] = word;
+        Ok(())
+    }
+
     /// Reads one memory cell as a signed integer value.
     pub fn memory_word(&self, address: usize) -> Result<i64, MixError> {
         if address >= MEMORY_SIZE {
