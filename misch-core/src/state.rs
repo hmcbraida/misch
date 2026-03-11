@@ -56,7 +56,7 @@ impl MixState {
         reader: F,
     ) -> Result<(), MixError>
     where
-        F: FnMut() -> Result<Vec<i64>, MixError> + 'static,
+        F: FnMut() -> Result<Vec<i64>, MixError> + Send + 'static,
     {
         self.ensure_unit(unit)?;
         let byte_size = self.byte_size;
@@ -81,7 +81,7 @@ impl MixState {
         writer: F,
     ) -> Result<(), MixError>
     where
-        F: FnMut(&[i64]) -> Result<(), MixError> + 'static,
+        F: FnMut(&[i64]) -> Result<(), MixError> + Send + 'static,
     {
         self.ensure_unit(unit)?;
         let byte_size = self.byte_size;
@@ -182,6 +182,69 @@ impl MixState {
     /// Returns true iff the machine has halted.
     pub fn is_halted(&self) -> bool {
         self.halted
+    }
+
+    /// Returns the current instruction counter.
+    pub fn instruction_counter(&self) -> u16 {
+        self.ic
+    }
+
+    /// Returns true if the overflow flag is set.
+    pub fn overflow_flag(&self) -> bool {
+        self.overflow
+    }
+
+    /// Returns the comparison indicator as `less`, `equal`, or `greater`.
+    pub fn comparison_indicator(&self) -> &'static str {
+        match self.comparison {
+            Comparison::Less => "less",
+            Comparison::Equal => "equal",
+            Comparison::Greater => "greater",
+        }
+    }
+
+    /// Returns register A as a signed integer.
+    pub fn register_a(&self) -> i64 {
+        self.r_a.as_signed_i64(self.byte_size)
+    }
+
+    /// Returns register X as a signed integer.
+    pub fn register_x(&self) -> i64 {
+        self.r_x.as_signed_i64(self.byte_size)
+    }
+
+    /// Returns the jump register J as a signed integer.
+    pub fn register_j(&self) -> i32 {
+        self.r_j.as_signed_i32(self.byte_size)
+    }
+
+    /// Returns index register I1..I6 as a signed integer.
+    pub fn index_register(&self, index: u8) -> Result<i32, MixError> {
+        if !(1..=6).contains(&index) {
+            return Err(MixError::InvalidIndexRegister(index));
+        }
+        Ok(self.r_i[usize::from(index - 1)].as_signed_i32(self.byte_size))
+    }
+
+    /// Returns a signed memory slice beginning at `start`.
+    pub fn memory_window(
+        &self,
+        start: usize,
+        length: usize,
+    ) -> Result<Vec<i64>, MixError> {
+        if start >= MEMORY_SIZE {
+            return Err(MixError::AddressOutOfRange(start as i32));
+        }
+        let end = start
+            .checked_add(length)
+            .ok_or(MixError::AddressOutOfRange(i32::MAX))?;
+        if end > MEMORY_SIZE {
+            return Err(MixError::AddressOutOfRange(end as i32));
+        }
+        Ok(self.memory[start..end]
+            .iter()
+            .map(|word| word.as_signed_i64(self.byte_size))
+            .collect())
     }
 
     fn execute(&mut self, instruction: Instruction) -> Result<(), MixError> {
@@ -942,8 +1005,7 @@ impl MixState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     const BYTE_SIZE: u16 = 64;
 
@@ -1178,10 +1240,10 @@ mod tests {
         })
         .unwrap();
 
-        let captured: Rc<RefCell<Vec<i64>>> = Rc::new(RefCell::new(Vec::new()));
-        let captured_out = Rc::clone(&captured);
+        let captured: Arc<Mutex<Vec<i64>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_out = Arc::clone(&captured);
         s.attach_output_callback(17, 2, move |block| {
-            captured_out.borrow_mut().extend_from_slice(block);
+            captured_out.lock().unwrap().extend_from_slice(block);
             Ok(())
         })
         .unwrap();
@@ -1199,7 +1261,7 @@ mod tests {
         assert_eq!(s.memory[501].as_signed_i64(64), 8);
 
         s.advance_state().unwrap();
-        assert_eq!(captured.borrow().len(), 2);
+        assert_eq!(captured.lock().unwrap().len(), 2);
 
         s.memory[2] = instr(Instruction::In {
             addr: address(0, 0),

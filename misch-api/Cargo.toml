@@ -1,0 +1,10 @@
+[package]
+name = "misch-api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+misch-core = { path = "../misch-core" }
+rocket = { version = "0.5.1", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
