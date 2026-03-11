@@ -1,8 +1,8 @@
 use crate::MixError;
 use crate::instruction::{
-    self, AddrTransferMode, AddrTransferTarget, AddressSpec, CompareTarget, Instruction,
-    JumpCondition, LoadTarget, OperandSpec, RegisterJumpCondition, RegisterJumpTarget, ShiftMode,
-    StoreSource,
+    self, AddrTransferMode, AddrTransferTarget, AddressSpec, CompareTarget,
+    Instruction, JumpCondition, LoadTarget, OperandSpec, RegisterJumpCondition,
+    RegisterJumpTarget, ShiftMode, StoreSource,
 };
 use crate::io::{CallbackInputDevice, CallbackOutputDevice, DeviceSlot};
 use crate::word::{Comparison, MixHalfWord, MixWord, Sign};
@@ -68,7 +68,8 @@ impl MixState {
                 .map(|v| MixWord::from_signed(v, byte_size))
                 .collect())
         });
-        self.devices[usize::from(unit)] = Some(DeviceSlot::Input(Box::new(adapter)));
+        self.devices[usize::from(unit)] =
+            Some(DeviceSlot::Input(Box::new(adapter)));
         Ok(())
     }
 
@@ -86,15 +87,21 @@ impl MixState {
         let byte_size = self.byte_size;
         let mut writer = writer;
         let adapter = CallbackOutputDevice::new(block_size, move |block| {
-            let raw: Vec<i64> = block.iter().map(|w| w.as_signed_i64(byte_size)).collect();
+            let raw: Vec<i64> =
+                block.iter().map(|w| w.as_signed_i64(byte_size)).collect();
             writer(&raw)
         });
-        self.devices[usize::from(unit)] = Some(DeviceSlot::Output(Box::new(adapter)));
+        self.devices[usize::from(unit)] =
+            Some(DeviceSlot::Output(Box::new(adapter)));
         Ok(())
     }
 
     /// Writes one memory cell from a signed integer value.
-    pub fn set_memory_word(&mut self, address: usize, value: i64) -> Result<(), MixError> {
+    pub fn set_memory_word(
+        &mut self,
+        address: usize,
+        value: i64,
+    ) -> Result<(), MixError> {
         if address >= MEMORY_SIZE {
             return Err(MixError::AddressOutOfRange(address as i32));
         }
@@ -153,7 +160,8 @@ impl MixState {
         }
 
         let instruction_word = self.memory[usize::from(self.ic)];
-        let instruction = instruction::decode(instruction_word, self.byte_size)?;
+        let instruction =
+            instruction::Instruction::decode(instruction_word, self.byte_size)?;
         self.ic = self.ic.wrapping_add(1);
         self.execute(instruction)
     }
@@ -180,7 +188,9 @@ impl MixState {
                 negate,
                 operand,
             } => self.exec_load(target, negate, operand),
-            Instruction::Store { source, operand } => self.exec_store(source, operand),
+            Instruction::Store { source, operand } => {
+                self.exec_store(source, operand)
+            }
             Instruction::Jbus { addr, unit } => self.exec_jbus(addr, unit),
             Instruction::Ioc { addr, unit } => self.exec_ioc(addr, unit),
             Instruction::In { addr, unit } => self.exec_in(addr, unit),
@@ -193,7 +203,9 @@ impl MixState {
             Instruction::AddrTransfer { addr, target, mode } => {
                 self.exec_addr_transfer(addr, target, mode)
             }
-            Instruction::Compare { target, operand } => self.exec_compare(target, operand),
+            Instruction::Compare { target, operand } => {
+                self.exec_compare(target, operand)
+            }
         }
     }
 
@@ -241,17 +253,26 @@ impl MixState {
         self.memory[addr].slice(op.field)
     }
 
-    fn jump_to(&mut self, destination: i32, store_return: bool) -> Result<(), MixError> {
+    fn jump_to(
+        &mut self,
+        destination: i32,
+        store_return: bool,
+    ) -> Result<(), MixError> {
         let checked = self.checked_memory_address(destination)?;
         if store_return {
-            self.r_j = MixHalfWord::from_signed(i32::from(self.ic), self.byte_size)
-                .with_positive_zero_policy();
+            self.r_j =
+                MixHalfWord::from_signed(i32::from(self.ic), self.byte_size)
+                    .with_positive_zero_policy();
         }
         self.ic = checked as u16;
         Ok(())
     }
 
-    fn add_to_word_with_overflow(&mut self, current: MixWord, delta: i64) -> MixWord {
+    fn add_to_word_with_overflow(
+        &mut self,
+        current: MixWord,
+        delta: i64,
+    ) -> MixWord {
         let max_mag = self.word_modulus() - 1;
         let mut sum = current.as_signed_i64(self.byte_size) + delta;
         self.overflow = sum.abs() > max_mag;
@@ -270,7 +291,11 @@ impl MixState {
         MixWord::from_signed(sum, self.byte_size)
     }
 
-    fn add_to_half_with_overflow(&mut self, current: MixHalfWord, delta: i32) -> MixHalfWord {
+    fn add_to_half_with_overflow(
+        &mut self,
+        current: MixHalfWord,
+        delta: i32,
+    ) -> MixHalfWord {
         let max_mag = self.half_modulus() - 1;
         let mut sum = current.as_signed_i32(self.byte_size) + delta;
         self.overflow = sum.abs() > max_mag;
@@ -292,14 +317,20 @@ impl MixState {
     /// Implements `ADD`.
     fn exec_add(&mut self, op: OperandSpec) -> Result<(), MixError> {
         let v = self.word_from_m(op)?;
-        self.r_a = self.add_to_word_with_overflow(self.r_a, v.as_signed_i64(self.byte_size));
+        self.r_a = self.add_to_word_with_overflow(
+            self.r_a,
+            v.as_signed_i64(self.byte_size),
+        );
         Ok(())
     }
 
     /// Implements `SUB`.
     fn exec_sub(&mut self, op: OperandSpec) -> Result<(), MixError> {
         let v = self.word_from_m(op)?;
-        self.r_a = self.add_to_word_with_overflow(self.r_a, -v.as_signed_i64(self.byte_size));
+        self.r_a = self.add_to_word_with_overflow(
+            self.r_a,
+            -v.as_signed_i64(self.byte_size),
+        );
         Ok(())
     }
 
@@ -311,7 +342,8 @@ impl MixState {
         } else {
             Sign::Negative
         };
-        let product = self.r_a.magnitude(self.byte_size) * v.magnitude(self.byte_size);
+        let product =
+            self.r_a.magnitude(self.byte_size) * v.magnitude(self.byte_size);
         let base = i64::from(self.byte_size);
 
         let mut digits = [0_u16; 10];
@@ -388,7 +420,8 @@ impl MixState {
         if self.r_a.sign == Sign::Negative {
             number = -number;
         }
-        self.r_a = MixWord::from_signed(number, self.byte_size).with_sign(self.r_a.sign);
+        self.r_a = MixWord::from_signed(number, self.byte_size)
+            .with_sign(self.r_a.sign);
         Ok(())
     }
 
@@ -400,8 +433,10 @@ impl MixState {
             digits[i] = 30 + (n % 10) as u16;
             n /= 10;
         }
-        self.r_a.bytes = [digits[0], digits[1], digits[2], digits[3], digits[4]];
-        self.r_x.bytes = [digits[5], digits[6], digits[7], digits[8], digits[9]];
+        self.r_a.bytes =
+            [digits[0], digits[1], digits[2], digits[3], digits[4]];
+        self.r_x.bytes =
+            [digits[5], digits[6], digits[7], digits[8], digits[9]];
         Ok(())
     }
 
@@ -412,7 +447,11 @@ impl MixState {
     }
 
     /// Implements all `SL*`/`SR*` shift instructions.
-    fn exec_shift(&mut self, addr: AddressSpec, mode: ShiftMode) -> Result<(), MixError> {
+    fn exec_shift(
+        &mut self,
+        addr: AddressSpec,
+        mode: ShiftMode,
+    ) -> Result<(), MixError> {
         let m = self.effective_address(addr)?;
         let amount = usize::try_from(m.max(0)).unwrap_or(0);
         match mode {
@@ -428,7 +467,10 @@ impl MixState {
                 out[n..].copy_from_slice(&self.r_a.bytes[..(5 - n)]);
                 self.r_a.bytes = out;
             }
-            ShiftMode::Slax | ShiftMode::Srax | ShiftMode::Slc | ShiftMode::Src => {
+            ShiftMode::Slax
+            | ShiftMode::Srax
+            | ShiftMode::Slc
+            | ShiftMode::Src => {
                 let mut joined = [0_u16; 10];
                 joined[..5].copy_from_slice(&self.r_a.bytes);
                 joined[5..].copy_from_slice(&self.r_x.bytes);
@@ -448,11 +490,14 @@ impl MixState {
                     ShiftMode::Src => joined.rotate_right(n),
                     _ => unreachable!(),
                 }
-                self.r_a.bytes = [joined[0], joined[1], joined[2], joined[3], joined[4]];
-                self.r_x.bytes = [joined[5], joined[6], joined[7], joined[8], joined[9]];
+                self.r_a.bytes =
+                    [joined[0], joined[1], joined[2], joined[3], joined[4]];
+                self.r_x.bytes =
+                    [joined[5], joined[6], joined[7], joined[8], joined[9]];
             }
             ShiftMode::Slb | ShiftMode::Srb => {
-                let bits_per_byte = (f64::from(self.byte_size).log2().ceil()) as u32;
+                let bits_per_byte =
+                    (f64::from(self.byte_size).log2().ceil()) as u32;
                 let total_bits = bits_per_byte * 10;
                 let mut value: u128 = 0;
                 let base = u128::from(self.byte_size);
@@ -477,15 +522,21 @@ impl MixState {
                     digits[i] = (rem % base) as u16;
                     rem /= base;
                 }
-                self.r_a.bytes = [digits[0], digits[1], digits[2], digits[3], digits[4]];
-                self.r_x.bytes = [digits[5], digits[6], digits[7], digits[8], digits[9]];
+                self.r_a.bytes =
+                    [digits[0], digits[1], digits[2], digits[3], digits[4]];
+                self.r_x.bytes =
+                    [digits[5], digits[6], digits[7], digits[8], digits[9]];
             }
         }
         Ok(())
     }
 
     /// Implements `MOVE`.
-    fn exec_move(&mut self, addr: AddressSpec, count: u8) -> Result<(), MixError> {
+    fn exec_move(
+        &mut self,
+        addr: AddressSpec,
+        count: u8,
+    ) -> Result<(), MixError> {
         let source_start = self.effective_address(addr)?;
         let mut target = self.r_i[0].as_signed_i32(self.byte_size);
         for i in 0..usize::from(count) {
@@ -513,13 +564,19 @@ impl MixState {
         match target {
             LoadTarget::A => self.r_a = v,
             LoadTarget::X => self.r_x = v,
-            LoadTarget::I(i) => self.r_i[usize::from(i - 1)] = MixHalfWord::from_word(v),
+            LoadTarget::I(i) => {
+                self.r_i[usize::from(i - 1)] = MixHalfWord::from_word(v)
+            }
         }
         Ok(())
     }
 
     /// Implements `ST*` instructions.
-    fn exec_store(&mut self, source: StoreSource, op: OperandSpec) -> Result<(), MixError> {
+    fn exec_store(
+        &mut self,
+        source: StoreSource,
+        op: OperandSpec,
+    ) -> Result<(), MixError> {
         let m = self.effective_address(op.addr)?;
         let addr = self.checked_memory_address(m)?;
         let src = match source {
@@ -533,7 +590,11 @@ impl MixState {
     }
 
     /// Implements `JBUS`.
-    fn exec_jbus(&mut self, addr: AddressSpec, unit: u8) -> Result<(), MixError> {
+    fn exec_jbus(
+        &mut self,
+        addr: AddressSpec,
+        unit: u8,
+    ) -> Result<(), MixError> {
         self.ensure_unit(unit)?;
         let busy = match self.devices[usize::from(unit)].as_ref() {
             Some(DeviceSlot::Input(d)) => d.busy(),
@@ -547,7 +608,11 @@ impl MixState {
     }
 
     /// Implements `IOC`.
-    fn exec_ioc(&mut self, addr: AddressSpec, unit: u8) -> Result<(), MixError> {
+    fn exec_ioc(
+        &mut self,
+        addr: AddressSpec,
+        unit: u8,
+    ) -> Result<(), MixError> {
         self.ensure_unit(unit)?;
         let command = self.effective_address(addr)?;
         match self.devices[usize::from(unit)].as_mut() {
@@ -561,7 +626,8 @@ impl MixState {
     /// Implements `IN`.
     fn exec_in(&mut self, addr: AddressSpec, unit: u8) -> Result<(), MixError> {
         self.ensure_unit(unit)?;
-        let start = self.checked_memory_address(self.effective_address(addr)?)?;
+        let start =
+            self.checked_memory_address(self.effective_address(addr)?)?;
         let block = match self.devices[usize::from(unit)].as_mut() {
             Some(DeviceSlot::Input(d)) => {
                 let data = d.read_block()?;
@@ -585,16 +651,22 @@ impl MixState {
 
         for (offset, word) in block.into_iter().enumerate() {
             word.validate(self.byte_size)?;
-            let dst = self.checked_memory_address(start as i32 + offset as i32)?;
+            let dst =
+                self.checked_memory_address(start as i32 + offset as i32)?;
             self.memory[dst] = word;
         }
         Ok(())
     }
 
     /// Implements `OUT`.
-    fn exec_out(&mut self, addr: AddressSpec, unit: u8) -> Result<(), MixError> {
+    fn exec_out(
+        &mut self,
+        addr: AddressSpec,
+        unit: u8,
+    ) -> Result<(), MixError> {
         self.ensure_unit(unit)?;
-        let start = self.checked_memory_address(self.effective_address(addr)?)?;
+        let start =
+            self.checked_memory_address(self.effective_address(addr)?)?;
 
         let count = match self.devices[usize::from(unit)].as_ref() {
             Some(DeviceSlot::Output(d)) => d.block_size(),
@@ -624,7 +696,11 @@ impl MixState {
     }
 
     /// Implements `JRED`.
-    fn exec_jred(&mut self, addr: AddressSpec, unit: u8) -> Result<(), MixError> {
+    fn exec_jred(
+        &mut self,
+        addr: AddressSpec,
+        unit: u8,
+    ) -> Result<(), MixError> {
         self.ensure_unit(unit)?;
         let busy = match self.devices[usize::from(unit)].as_ref() {
             Some(DeviceSlot::Input(d)) => d.busy(),
@@ -638,7 +714,11 @@ impl MixState {
     }
 
     /// Implements opcode 39 jump family (`JMP`/`JSJ`/`JOV`/...).
-    fn exec_jump(&mut self, addr: AddressSpec, cond: JumpCondition) -> Result<(), MixError> {
+    fn exec_jump(
+        &mut self,
+        addr: AddressSpec,
+        cond: JumpCondition,
+    ) -> Result<(), MixError> {
         let should_jump = match cond {
             JumpCondition::Jmp | JumpCondition::Jsj => true,
             JumpCondition::Jov => {
@@ -688,7 +768,10 @@ impl MixState {
         Ok(())
     }
 
-    fn jump_predicate_word(value: MixWord, cond: RegisterJumpCondition) -> bool {
+    fn jump_predicate_word(
+        value: MixWord,
+        cond: RegisterJumpCondition,
+    ) -> bool {
         let is_zero = value.bytes == [0; 5];
         // MIX has both +0 and -0. We treat -0 as negative for sign-based jumps.
         let is_neg = value.sign == Sign::Negative;
@@ -706,7 +789,10 @@ impl MixState {
         }
     }
 
-    fn jump_predicate_half(value: MixHalfWord, cond: RegisterJumpCondition) -> bool {
+    fn jump_predicate_half(
+        value: MixHalfWord,
+        cond: RegisterJumpCondition,
+    ) -> bool {
         let is_zero = value.is_zero();
         let is_neg = value.is_negative();
         let is_pos = value.is_positive();
@@ -733,46 +819,58 @@ impl MixState {
         match target {
             AddrTransferTarget::A => match mode {
                 AddrTransferMode::Ent => {
-                    self.r_a = MixWord::from_signed(i64::from(m), self.byte_size)
+                    self.r_a =
+                        MixWord::from_signed(i64::from(m), self.byte_size)
                 }
                 AddrTransferMode::Enn => {
-                    self.r_a = MixWord::from_signed(i64::from(-m), self.byte_size)
+                    self.r_a =
+                        MixWord::from_signed(i64::from(-m), self.byte_size)
                 }
                 AddrTransferMode::Inc => {
-                    self.r_a = self.add_to_word_with_overflow(self.r_a, i64::from(m));
+                    self.r_a =
+                        self.add_to_word_with_overflow(self.r_a, i64::from(m));
                 }
                 AddrTransferMode::Dec => {
-                    self.r_a = self.add_to_word_with_overflow(self.r_a, i64::from(-m));
+                    self.r_a =
+                        self.add_to_word_with_overflow(self.r_a, i64::from(-m));
                 }
             },
             AddrTransferTarget::X => match mode {
                 AddrTransferMode::Ent => {
-                    self.r_x = MixWord::from_signed(i64::from(m), self.byte_size)
+                    self.r_x =
+                        MixWord::from_signed(i64::from(m), self.byte_size)
                 }
                 AddrTransferMode::Enn => {
-                    self.r_x = MixWord::from_signed(i64::from(-m), self.byte_size)
+                    self.r_x =
+                        MixWord::from_signed(i64::from(-m), self.byte_size)
                 }
                 AddrTransferMode::Inc => {
-                    self.r_x = self.add_to_word_with_overflow(self.r_x, i64::from(m));
+                    self.r_x =
+                        self.add_to_word_with_overflow(self.r_x, i64::from(m));
                 }
                 AddrTransferMode::Dec => {
-                    self.r_x = self.add_to_word_with_overflow(self.r_x, i64::from(-m));
+                    self.r_x =
+                        self.add_to_word_with_overflow(self.r_x, i64::from(-m));
                 }
             },
             AddrTransferTarget::I(i) => {
                 let idx = usize::from(i - 1);
                 match mode {
                     AddrTransferMode::Ent => {
-                        self.r_i[idx] = MixHalfWord::from_signed(m, self.byte_size)
+                        self.r_i[idx] =
+                            MixHalfWord::from_signed(m, self.byte_size)
                     }
                     AddrTransferMode::Enn => {
-                        self.r_i[idx] = MixHalfWord::from_signed(-m, self.byte_size)
+                        self.r_i[idx] =
+                            MixHalfWord::from_signed(-m, self.byte_size)
                     }
                     AddrTransferMode::Inc => {
-                        self.r_i[idx] = self.add_to_half_with_overflow(self.r_i[idx], m)
+                        self.r_i[idx] =
+                            self.add_to_half_with_overflow(self.r_i[idx], m)
                     }
                     AddrTransferMode::Dec => {
-                        self.r_i[idx] = self.add_to_half_with_overflow(self.r_i[idx], -m)
+                        self.r_i[idx] =
+                            self.add_to_half_with_overflow(self.r_i[idx], -m)
                     }
                 }
             }
@@ -781,7 +879,11 @@ impl MixState {
     }
 
     /// Implements `CMP*` family.
-    fn exec_compare(&mut self, target: CompareTarget, op: OperandSpec) -> Result<(), MixError> {
+    fn exec_compare(
+        &mut self,
+        target: CompareTarget,
+        op: OperandSpec,
+    ) -> Result<(), MixError> {
         let v = self.word_from_m(op)?;
         self.comparison = match target {
             CompareTarget::A => Self::cmp_word(self.r_a, v, self.byte_size),
@@ -807,7 +909,11 @@ impl MixState {
         }
     }
 
-    fn cmp_half(lhs: MixHalfWord, rhs: MixHalfWord, byte_size: u16) -> Comparison {
+    fn cmp_half(
+        lhs: MixHalfWord,
+        rhs: MixHalfWord,
+        byte_size: u16,
+    ) -> Comparison {
         let l = lhs.as_signed_i32(byte_size);
         let r = rhs.as_signed_i32(byte_size);
         if l < r {
@@ -826,27 +932,25 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    const BYTE_SIZE: u16 = 64;
+
     fn machine() -> MixState {
-        MixState::blank(64).unwrap()
+        MixState::blank(BYTE_SIZE).unwrap()
     }
 
-    fn instr(address: i16, index: u8, field: u8, opcode: u8) -> MixWord {
-        let sign = if address < 0 {
-            Sign::Negative
-        } else {
-            Sign::Positive
-        };
-        let abs = address.unsigned_abs();
-        MixWord {
-            sign,
-            bytes: [
-                (abs / 64) as u16,
-                (abs % 64) as u16,
-                index as u16,
-                field as u16,
-                opcode as u16,
-            ],
+    fn address(address: i16, index: u8) -> AddressSpec {
+        AddressSpec { address, index }
+    }
+
+    fn operand(op_address: i16, index: u8, field: u8) -> OperandSpec {
+        OperandSpec {
+            addr: address(op_address, index),
+            field,
         }
+    }
+
+    fn instr(instruction: Instruction) -> MixWord {
+        return instruction.encode(BYTE_SIZE);
     }
 
     #[test]
@@ -856,12 +960,19 @@ mod tests {
             sign: Sign::Negative,
             bytes: [1, 2, 3, 4, 5],
         };
-        s.memory[0] = instr(10, 0, 3 * 8 + 4, 8);
+        s.memory[0] = instr(Instruction::Load {
+            target: LoadTarget::A,
+            negate: false,
+            operand: operand(10, 0, 3 * 8 + 4),
+        });
         s.advance_state().unwrap();
         assert_eq!(s.r_a.sign, Sign::Positive);
         assert_eq!(s.r_a.bytes, [0, 0, 0, 3, 4]);
 
-        s.memory[1] = instr(11, 0, 2 * 8 + 3, 24);
+        s.memory[1] = instr(Instruction::Store {
+            source: StoreSource::A,
+            operand: operand(11, 0, 2 * 8 + 3),
+        });
         s.memory[11] = MixWord {
             sign: Sign::Negative,
             bytes: [9, 9, 9, 9, 9],
@@ -877,7 +988,7 @@ mod tests {
         let mut s = machine();
         s.r_a = MixWord::from_signed(s.word_modulus() - 1, s.byte_size);
         s.memory[100] = MixWord::from_signed(2, s.byte_size);
-        s.memory[0] = instr(100, 0, 5, 1);
+        s.memory[0] = instr(Instruction::Add(operand(100, 0, 5)));
         s.advance_state().unwrap();
         assert!(s.overflow);
         assert_eq!(s.r_a.as_signed_i64(s.byte_size), 1);
@@ -886,10 +997,13 @@ mod tests {
     #[test]
     fn sub_and_cmp_work() {
         let mut s = machine();
-        s.r_a = MixWord::from_signed(20, 64);
+        s.r_a = MixWord::from_signed(20, BYTE_SIZE);
         s.memory[20] = MixWord::from_signed(7, 64);
-        s.memory[0] = instr(20, 0, 5, 2);
-        s.memory[1] = instr(20, 0, 5, 56);
+        s.memory[0] = instr(Instruction::Sub(operand(20, 0, 5)));
+        s.memory[1] = instr(Instruction::Compare {
+            target: CompareTarget::A,
+            operand: operand(20, 0, 5),
+        });
         s.advance_state().unwrap();
         s.advance_state().unwrap();
         assert_eq!(s.r_a.as_signed_i64(64), 13);
@@ -901,14 +1015,14 @@ mod tests {
         let mut s = machine();
         s.r_a = MixWord::from_signed(1234, 64);
         s.memory[10] = MixWord::from_signed(12, 64);
-        s.memory[0] = instr(10, 0, 5, 3);
+        s.memory[0] = instr(Instruction::Mul(operand(10, 0, 5)));
         s.advance_state().unwrap();
         assert_eq!(
             s.r_a.magnitude(64) * s.word_modulus() + s.r_x.magnitude(64),
             14808
         );
 
-        s.memory[1] = instr(10, 0, 5, 4);
+        s.memory[1] = instr(Instruction::Div(operand(10, 0, 5)));
         s.ic = 1;
         s.advance_state().unwrap();
         assert_eq!(s.r_a.as_signed_i64(64), 1234);
@@ -920,17 +1034,17 @@ mod tests {
         let mut s = machine();
         s.r_a.bytes = [30, 31, 32, 33, 34];
         s.r_x.bytes = [35, 36, 37, 38, 39];
-        s.memory[0] = instr(0, 0, 0, 5);
+        s.memory[0] = instr(Instruction::Num);
         s.advance_state().unwrap();
         assert_eq!(s.r_a.as_signed_i64(64), 123456789 % s.word_modulus());
 
-        s.memory[1] = instr(0, 0, 1, 5);
+        s.memory[1] = instr(Instruction::Char);
         s.ic = 1;
         s.advance_state().unwrap();
         assert!(s.r_a.bytes.iter().all(|b| (30..=39).contains(b)));
         assert!(s.r_x.bytes.iter().all(|b| (30..=39).contains(b)));
 
-        s.memory[2] = instr(0, 0, 2, 5);
+        s.memory[2] = instr(Instruction::Hlt);
         s.ic = 2;
         s.advance_state().unwrap();
         assert!(s.is_halted());
@@ -941,11 +1055,17 @@ mod tests {
         let mut s = machine();
         s.r_a.bytes = [1, 2, 3, 4, 5];
         s.r_x.bytes = [6, 7, 8, 9, 10];
-        s.memory[0] = instr(2, 0, 0, 6);
+        s.memory[0] = instr(Instruction::Shift {
+            addr: address(2, 0),
+            mode: ShiftMode::Sla,
+        });
         s.advance_state().unwrap();
         assert_eq!(s.r_a.bytes, [3, 4, 5, 0, 0]);
 
-        s.memory[1] = instr(3, 0, 4, 6);
+        s.memory[1] = instr(Instruction::Shift {
+            addr: address(3, 0),
+            mode: ShiftMode::Slc,
+        });
         s.ic = 1;
         s.advance_state().unwrap();
         assert_eq!(s.r_a.bytes, [0, 0, 6, 7, 8]);
@@ -958,7 +1078,10 @@ mod tests {
         s.memory[200] = MixWord::from_signed(1, 64);
         s.memory[201] = MixWord::from_signed(2, 64);
         s.r_i[0] = MixHalfWord::from_signed(300, 64);
-        s.memory[0] = instr(200, 0, 2, 7);
+        s.memory[0] = instr(Instruction::Move {
+            addr: address(200, 0),
+            count: 2,
+        });
         s.advance_state().unwrap();
         assert_eq!(s.memory[300].as_signed_i64(64), 1);
         assert_eq!(s.memory[301].as_signed_i64(64), 2);
@@ -969,13 +1092,19 @@ mod tests {
     fn jump_family_and_overflow_reset() {
         let mut s = machine();
         s.overflow = true;
-        s.memory[0] = instr(100, 0, 2, 39);
+        s.memory[0] = instr(Instruction::Jump {
+            addr: address(100, 0),
+            cond: JumpCondition::Jov,
+        });
         s.advance_state().unwrap();
         assert_eq!(s.ic, 100);
         assert!(!s.overflow);
         assert_eq!(s.r_j.as_signed_i32(64), 1);
 
-        s.memory[100] = instr(200, 0, 1, 39);
+        s.memory[100] = instr(Instruction::Jump {
+            addr: address(200, 0),
+            cond: JumpCondition::Jsj,
+        });
         s.advance_state().unwrap();
         assert_eq!(s.ic, 200);
         assert_eq!(s.r_j.as_signed_i32(64), 1);
@@ -988,7 +1117,11 @@ mod tests {
             sign: Sign::Negative,
             bytes: [0; 5],
         };
-        s.memory[0] = instr(123, 0, 0, 40);
+        s.memory[0] = instr(Instruction::RegisterJump {
+            addr: address(123, 0),
+            target: RegisterJumpTarget::A,
+            cond: RegisterJumpCondition::Negative,
+        });
         s.advance_state().unwrap();
         assert_eq!(s.ic, 123);
     }
@@ -996,9 +1129,21 @@ mod tests {
     #[test]
     fn address_transfer_variants() {
         let mut s = machine();
-        s.memory[0] = instr(10, 0, 2, 48);
-        s.memory[1] = instr(5, 0, 0, 48);
-        s.memory[2] = instr(7, 0, 3, 55);
+        s.memory[0] = instr(Instruction::AddrTransfer {
+            addr: address(10, 0),
+            target: AddrTransferTarget::A,
+            mode: AddrTransferMode::Ent,
+        });
+        s.memory[1] = instr(Instruction::AddrTransfer {
+            addr: address(5, 0),
+            target: AddrTransferTarget::A,
+            mode: AddrTransferMode::Inc,
+        });
+        s.memory[2] = instr(Instruction::AddrTransfer {
+            addr: address(7, 0),
+            target: AddrTransferTarget::X,
+            mode: AddrTransferMode::Enn,
+        });
         s.advance_state().unwrap();
         assert_eq!(s.r_a.as_signed_i64(64), 10);
         s.advance_state().unwrap();
@@ -1010,7 +1155,8 @@ mod tests {
     #[test]
     fn io_in_out_and_missing_device_error() {
         let mut s = machine();
-        let input_words = vec![MixWord::from_signed(9, 64), MixWord::from_signed(8, 64)];
+        let input_words =
+            vec![MixWord::from_signed(9, 64), MixWord::from_signed(8, 64)];
         s.attach_input_callback(16, 2, move || {
             Ok(input_words
                 .iter()
@@ -1027,8 +1173,14 @@ mod tests {
         })
         .unwrap();
 
-        s.memory[0] = instr(500, 0, 16, 36);
-        s.memory[1] = instr(500, 0, 17, 37);
+        s.memory[0] = instr(Instruction::In {
+            addr: address(500, 0),
+            unit: 16,
+        });
+        s.memory[1] = instr(Instruction::Out {
+            addr: address(500, 0),
+            unit: 17,
+        });
         s.advance_state().unwrap();
         assert_eq!(s.memory[500].as_signed_i64(64), 9);
         assert_eq!(s.memory[501].as_signed_i64(64), 8);
@@ -1036,7 +1188,10 @@ mod tests {
         s.advance_state().unwrap();
         assert_eq!(captured.borrow().len(), 2);
 
-        s.memory[2] = instr(0, 0, 5, 36);
+        s.memory[2] = instr(Instruction::In {
+            addr: address(0, 0),
+            unit: 5,
+        });
         s.ic = 2;
         let err = s.advance_state().unwrap_err();
         assert!(matches!(err, MixError::DeviceNotAttached(5)));
@@ -1046,8 +1201,14 @@ mod tests {
     fn jbus_jred_use_device_busy_state() {
         let mut s = machine();
         s.attach_input_callback(0, 1, || Ok(vec![0])).unwrap();
-        s.memory[0] = instr(200, 0, 0, 34);
-        s.memory[1] = instr(300, 0, 0, 38);
+        s.memory[0] = instr(Instruction::Jbus {
+            addr: address(200, 0),
+            unit: 0,
+        });
+        s.memory[1] = instr(Instruction::Jred {
+            addr: address(300, 0),
+            unit: 0,
+        });
         s.advance_state().unwrap();
         assert_eq!(s.ic, 1);
         s.advance_state().unwrap();

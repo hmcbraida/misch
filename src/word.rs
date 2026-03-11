@@ -125,7 +125,11 @@ impl MixWord {
         Ok(Self { sign, bytes: out })
     }
 
-    pub(crate) fn store_field(&mut self, field: u8, source: Self) -> Result<(), MixError> {
+    pub(crate) fn store_field(
+        &mut self,
+        field: u8,
+        source: Self,
+    ) -> Result<(), MixError> {
         let l = Self::field_l(field);
         let r = Self::field_r(field);
         if l > r || r > 5 {
@@ -165,7 +169,8 @@ impl MixHalfWord {
     };
 
     pub(crate) fn as_signed_i32(&self, byte_size: u16) -> i32 {
-        let mag = i32::from(self.bytes[0]) * i32::from(byte_size) + i32::from(self.bytes[1]);
+        let mag = i32::from(self.bytes[0]) * i32::from(byte_size)
+            + i32::from(self.bytes[1]);
         match self.sign {
             Sign::Positive => mag,
             Sign::Negative => -mag,
