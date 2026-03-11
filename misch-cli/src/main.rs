@@ -108,14 +108,22 @@ fn run() -> Result<(), CliError> {
     state.attach_output_callback(
         config.line_writer_unit,
         config.line_writer_block_size,
-        move |block| {
-            let mut out = String::new();
-            for &word in block {
-                out.push_str(&decode_word_to_text(word));
+        {
+            let mut emitted_chars = 0usize;
+            move |block| {
+                for &word in block {
+                    let text = decode_word_to_text(word);
+                    for ch in text.chars() {
+                        print!("{ch}");
+                        emitted_chars += 1;
+                        if emitted_chars % 100 == 0 {
+                            print!("\n");
+                        }
+                    }
+                }
+                let _ = io::stdout().flush();
+                Ok(())
             }
-            print!("{out}");
-            let _ = io::stdout().flush();
-            Ok(())
         },
     )?;
 

@@ -1,0 +1,46 @@
+IN 2000(16)      ; read 1 word of paper tape text (e.g. 00010)
+ENTA 0
+LDX 2000
+NUM             ; parse decimal text from rX into rA
+STA 2010        ; target count N
+STZ 2021        ; spacer word (5 spaces)
+
+ENT1 0          ; emitted prime count
+ENTA 2
+STA 2011        ; current candidate
+
+CMP1 2010       ; while count < N
+JGE 36
+
+ENTA 2
+STA 2012        ; divisor = 2
+
+LDA 2012        ; divisibility loop
+MUL 2012        ; divisor^2 in rX for small values
+CMPX 2011
+JG 25           ; if divisor^2 > candidate, candidate is prime
+
+ENTA 0
+LDX 2011
+DIV 2012
+JXZ 32          ; remainder == 0 => not prime
+
+LDA 2012
+INCA 1
+STA 2012
+JMP 13
+
+LDA 2011        ; prime: render and output as 5 MIX chars
+CHAR
+STX 2020
+OUT 2020(18)
+OUT 2021(18)
+INC1 1
+JMP 32
+
+LDA 2011        ; next candidate
+INCA 1
+STA 2011
+JMP 9
+
+HLT
