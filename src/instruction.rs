@@ -480,8 +480,8 @@ impl Instruction {
         MixWord {
             sign,
             bytes: [
-                (abs / byte_size) as u16,
-                (abs % byte_size) as u16,
+                abs / byte_size,
+                abs % byte_size,
                 index as u16,
                 field as u16,
                 opcode as u16,

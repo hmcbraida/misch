@@ -1,6 +1,9 @@
 use crate::error::MixError;
 use crate::word::MixWord;
 
+type InputCallback = dyn FnMut() -> Result<Vec<MixWord>, MixError>;
+type OutputCallback = dyn FnMut(&[MixWord]) -> Result<(), MixError>;
+
 pub(crate) trait InputDevice {
     fn block_size(&self) -> usize;
     fn read_block(&mut self) -> Result<Vec<MixWord>, MixError>;
@@ -25,7 +28,7 @@ pub(crate) trait OutputDevice {
 
 pub(crate) struct CallbackInputDevice {
     block: usize,
-    reader: Box<dyn FnMut() -> Result<Vec<MixWord>, MixError>>,
+    reader: Box<InputCallback>,
 }
 
 impl CallbackInputDevice {
@@ -52,7 +55,7 @@ impl InputDevice for CallbackInputDevice {
 
 pub(crate) struct CallbackOutputDevice {
     block: usize,
-    writer: Box<dyn FnMut(&[MixWord]) -> Result<(), MixError>>,
+    writer: Box<OutputCallback>,
 }
 
 impl CallbackOutputDevice {

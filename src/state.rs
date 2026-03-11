@@ -1,4 +1,3 @@
-use crate::MixError;
 use crate::instruction::{
     self, AddrTransferMode, AddrTransferTarget, AddressSpec, CompareTarget,
     Instruction, JumpCondition, LoadTarget, OperandSpec, RegisterJumpCondition,
@@ -6,6 +5,7 @@ use crate::instruction::{
 };
 use crate::io::{CallbackInputDevice, CallbackOutputDevice, DeviceSlot};
 use crate::word::{Comparison, MixHalfWord, MixWord, Sign};
+use crate::MixError;
 
 const MEMORY_SIZE: usize = 4000;
 const DEVICE_COUNT: usize = 21;
@@ -151,8 +151,8 @@ impl MixState {
         let word = MixWord {
             sign,
             bytes: [
-                (abs / self.byte_size) as u16,
-                (abs % self.byte_size) as u16,
+                abs / self.byte_size,
+                abs % self.byte_size,
                 index as u16,
                 field as u16,
                 opcode as u16,
@@ -963,7 +963,7 @@ mod tests {
     }
 
     fn instr(instruction: Instruction) -> MixWord {
-        return instruction.encode(BYTE_SIZE);
+        instruction.encode(BYTE_SIZE)
     }
 
     #[test]
@@ -1169,7 +1169,7 @@ mod tests {
     fn io_in_out_and_missing_device_error() {
         let mut s = machine();
         let input_words =
-            vec![MixWord::from_signed(9, 64), MixWord::from_signed(8, 64)];
+            [MixWord::from_signed(9, 64), MixWord::from_signed(8, 64)];
         s.attach_input_callback(16, 2, move || {
             Ok(input_words
                 .iter()
