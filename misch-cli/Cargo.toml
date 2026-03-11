@@ -1,0 +1,7 @@
+[package]
+name = "misch-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+misch-core = { path = "../misch-core" }

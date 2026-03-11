@@ -820,9 +820,7 @@ fn io_instruction(
     line_no: usize,
     kind: IoKind,
 ) -> Result<Instruction, AssemblerError> {
-    let parsed = parse_operand(operand_text, line_no, 0)?;
-    let addr = address_from(&parsed);
-    let unit = parsed.field;
+    let (addr, unit) = parse_io_operand(operand_text, line_no)?;
     Ok(match kind {
         IoKind::Jbus => Instruction::Jbus { addr, unit },
         IoKind::Ioc => Instruction::Ioc { addr, unit },
@@ -830,6 +828,84 @@ fn io_instruction(
         IoKind::Out => Instruction::Out { addr, unit },
         IoKind::Jred => Instruction::Jred { addr, unit },
     })
+}
+
+fn parse_io_operand(
+    operand_text: &str,
+    line_no: usize,
+) -> Result<(AddressSpec, u8), AssemblerError> {
+    if operand_text.is_empty() {
+        return Ok((
+            AddressSpec {
+                address: 0,
+                index: 0,
+            },
+            0,
+        ));
+    }
+
+    let mut core = operand_text;
+    let mut unit = 0u8;
+
+    if let Some(open_idx) = core.find('(') {
+        if !core.ends_with(')') {
+            return Err(asm_syntax(
+                line_no,
+                "device unit specification must end with `)`",
+            ));
+        }
+        let close_idx = core.len() - 1;
+        if open_idx >= close_idx {
+            return Err(asm_syntax(line_no, "empty device unit specification"));
+        }
+
+        let unit_text = core[open_idx + 1..close_idx].trim();
+        unit = unit_text.parse::<u8>().map_err(|_| {
+            asm_syntax(line_no, &format!("invalid device unit `{unit_text}`"))
+        })?;
+        core = core[..open_idx].trim();
+    }
+
+    let (address_text, index_text) = if let Some(comma_idx) = core.find(',') {
+        (core[..comma_idx].trim(), Some(core[comma_idx + 1..].trim()))
+    } else {
+        (core.trim(), None)
+    };
+
+    let address = if address_text.is_empty() {
+        0
+    } else {
+        let parsed = address_text.parse::<i32>().map_err(|_| {
+            asm_syntax(line_no, &format!("invalid address `{address_text}`"))
+        })?;
+        i16::try_from(parsed).map_err(|_| {
+            asm_syntax(line_no, &format!("address `{parsed}` out of range"))
+        })?
+    };
+
+    let index = match index_text {
+        Some(text) if !text.is_empty() => {
+            let parsed = text.parse::<u8>().map_err(|_| {
+                asm_syntax(line_no, &format!("invalid index register `{text}`"))
+            })?;
+            if parsed > 6 {
+                return Err(asm_syntax(
+                    line_no,
+                    &format!("index register `{parsed}` out of range"),
+                ));
+            }
+            parsed
+        }
+        Some(_) => {
+            return Err(asm_syntax(
+                line_no,
+                "missing index register after `,`",
+            ));
+        }
+        None => 0,
+    };
+
+    Ok((AddressSpec { address, index }, unit))
 }
 
 fn jump_instruction(
@@ -1081,5 +1157,13 @@ mod tests {
             result,
             Err(AssemblerError::Syntax { line: 1, .. })
         ));
+    }
+
+    #[test]
+    fn assembles_io_unit_numbers() {
+        let source = "IN 2000(16)\nOUT 2000(18)\nHLT\n";
+        let machine = assemble(source).unwrap();
+        assert!(machine.memory_word(0).unwrap() > 0);
+        assert!(machine.memory_word(1).unwrap() > 0);
     }
 }

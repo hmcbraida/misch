@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
-name = "misch"
+name = "misch-cli"
+version = "0.1.0"
+dependencies = [
+ "misch-core",
+]
+
+[[package]]
+name = "misch-core"
 version = "0.1.0"

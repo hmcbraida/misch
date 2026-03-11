@@ -7,6 +7,7 @@ mod io;
 mod state;
 mod word;
 
+pub use assembler::AssemblerError;
 pub use assembler::assemble;
 pub use error::MixError;
 pub use state::MixState;
