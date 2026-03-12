@@ -1,8 +1,11 @@
 # misch
 
-`misch` is a multi-package project for emulating Donald Knuth's MIX machine. It
+`misch` is a project for emulating Donald Knuth's MIX machine. It
 is split into a Rust workspace for the emulator/runtime surfaces and a SvelteKit
 frontend.
+
+<img width="1876" height="922" alt="image" src="https://github.com/user-attachments/assets/d61784ef-2799-4f36-b839-b0b0a5d4f365" />
+
 
 ## Repository layout
 
