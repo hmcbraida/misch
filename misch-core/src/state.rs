@@ -25,7 +25,7 @@ const DEVICE_COUNT: usize = 21;
 /// ```
 /// use misch_core::assemble;
 ///
-/// let mut machine = assemble("HLT\n").unwrap();
+/// let mut machine = assemble("HLT\nEND 0\n").unwrap();
 /// while !machine.is_halted() {
 ///     machine.advance_state().unwrap();
 /// }
@@ -245,6 +245,17 @@ impl MixState {
     /// Returns the current instruction counter (`IC`).
     pub fn instruction_counter(&self) -> u16 {
         self.ic
+    }
+
+    pub(crate) fn set_instruction_counter(
+        &mut self,
+        ic: u16,
+    ) -> Result<(), MixError> {
+        if usize::from(ic) >= MEMORY_SIZE {
+            return Err(MixError::AddressOutOfRange(i32::from(ic)));
+        }
+        self.ic = ic;
+        Ok(())
     }
 
     /// Returns the overflow toggle state.

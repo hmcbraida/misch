@@ -73,3 +73,6 @@ Example:
 ```sh
 cargo run -p misch-cli -- examples/primes.mixal --paper-tape examples/inputs/primes_input.txt
 ```
+
+See `examples/primes.mixal` for a feature-rich program using labels,
+directives, local symbols, literals, and `ORIG *+N` style addressing.

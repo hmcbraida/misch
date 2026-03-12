@@ -1,21 +1,17 @@
-use crate::MixError;
 use crate::instruction::{
     AddrTransferMode, AddrTransferTarget, AddressSpec, CompareTarget,
     Instruction, JumpCondition, LoadTarget, OperandSpec, RegisterJumpCondition,
     RegisterJumpTarget, ShiftMode, StoreSource,
 };
+use crate::mixchar::encode_text_to_words;
 use crate::state::MixState;
+use crate::word::MixWord;
+use crate::{MixCharError, MixError};
+use std::collections::HashMap;
 use std::fmt;
 
 const DEFAULT_BYTE_SIZE: u16 = 64;
-
-/// Parsed operand components prior to instruction construction.
-struct ParsedOperand {
-    address: i16,
-    index: u8,
-    field: u8,
-    has_field: bool,
-}
+const MIX_MEMORY_SIZE: i64 = 4000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Errors returned while assembling MIXAL source text.
@@ -40,707 +36,1739 @@ impl From<MixError> for AssemblerError {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ParsedLine {
+    line_no: usize,
+    order: usize,
+    label: Option<String>,
+    kind: LineKind,
+}
+
+#[derive(Debug, Clone)]
+enum LineKind {
+    Instruction {
+        mnemonic: String,
+        operand: String,
+    },
+    Directive {
+        directive: Directive,
+        operand: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Directive {
+    Orig,
+    Equ,
+    Con,
+    Alf,
+    End,
+}
+
+#[derive(Debug, Clone)]
+struct AsmItem {
+    line_no: usize,
+    order: usize,
+    location: i64,
+    kind: ItemKind,
+}
+
+#[derive(Debug, Clone)]
+enum ItemKind {
+    Instruction { mnemonic: String, operand: String },
+    Con { operand: String },
+    Alf { operand: String },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SymbolDef {
+    value: i64,
+    order: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SymbolTables {
+    globals: HashMap<String, SymbolDef>,
+    locals: HashMap<u8, Vec<SymbolDef>>,
+}
+
+impl SymbolTables {
+    fn new() -> Self {
+        Self {
+            globals: HashMap::new(),
+            locals: HashMap::new(),
+        }
+    }
+
+    fn define(
+        &mut self,
+        label: &str,
+        value: i64,
+        order: usize,
+        line_no: usize,
+    ) -> Result<(), AssemblerError> {
+        if let Some(local_digit) = local_h_digit(label) {
+            self.locals
+                .entry(local_digit)
+                .or_default()
+                .push(SymbolDef { value, order });
+            return Ok(());
+        }
+
+        if self.globals.contains_key(label) {
+            return Err(asm_syntax(
+                line_no,
+                &format!("symbol `{label}` is already defined"),
+            ));
+        }
+        self.globals
+            .insert(label.to_owned(), SymbolDef { value, order });
+        Ok(())
+    }
+
+    fn resolve(
+        &self,
+        symbol: &str,
+        usage_order: usize,
+        allow_future: bool,
+        line_no: usize,
+    ) -> Result<i64, AssemblerError> {
+        if let Some((digit, flavor)) = local_symbol_ref(symbol) {
+            let defs = self.locals.get(&digit).ok_or_else(|| {
+                asm_syntax(
+                    line_no,
+                    &format!("undefined local symbol `{symbol}`"),
+                )
+            })?;
+            let candidate = match flavor {
+                'B' => defs.iter().rev().find(|d| d.order < usage_order),
+                'F' => defs.iter().find(|d| d.order > usage_order),
+                'H' => defs.iter().rev().find(|d| d.order <= usage_order),
+                _ => None,
+            };
+            let def = candidate.ok_or_else(|| {
+                asm_syntax(
+                    line_no,
+                    &format!("undefined local symbol `{symbol}`"),
+                )
+            })?;
+            if def.order > usage_order && !allow_future {
+                return Err(asm_syntax(
+                    line_no,
+                    &format!(
+                        "future reference `{symbol}` is only allowed as standalone address"
+                    ),
+                ));
+            }
+            return Ok(def.value);
+        }
+
+        let def = self.globals.get(symbol).ok_or_else(|| {
+            asm_syntax(line_no, &format!("undefined symbol `{symbol}`"))
+        })?;
+        if def.order > usage_order && !allow_future {
+            return Err(asm_syntax(
+                line_no,
+                &format!(
+                    "future reference `{symbol}` is only allowed as standalone address"
+                ),
+            ));
+        }
+        Ok(def.value)
+    }
+}
+
+#[derive(Debug)]
+struct FirstPass {
+    items: Vec<AsmItem>,
+    symbols: SymbolTables,
+    end_start: i64,
+    literal_start: i64,
+}
+
+#[derive(Debug, Clone)]
+struct LiteralEntry {
+    addr: i64,
+    wexpr: String,
+    line_no: usize,
+    order: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OperandComponent {
+    Address,
+    Index,
+    Field,
+    WExpr,
+}
+
+#[derive(Debug, Clone)]
+struct EvalContext<'a> {
+    symbols: &'a SymbolTables,
+    line_no: usize,
+    order: usize,
+    location: i64,
+    allow_future_standalone: bool,
+    expression_text: &'a str,
+}
+
 /// Assembles MIXAL source code into an initialized [`MixState`].
-///
-/// The source is read line-by-line. Blank lines and trailing comments (`#` or
-/// `;`) are ignored. Each remaining line is parsed as a single instruction and
-/// written to memory starting at address `0`.
-///
-/// The returned state uses byte size `64` and has its instruction counter set
-/// to `0`.
 pub fn assemble(source: &str) -> Result<MixState, AssemblerError> {
-    let mut state = MixState::blank(DEFAULT_BYTE_SIZE)?;
-    let mut program_counter = 0usize;
+    let parsed = parse_source(source)?;
+    let first_pass = first_pass(&parsed)?;
+    second_pass(&first_pass)
+}
+
+fn parse_source(source: &str) -> Result<Vec<ParsedLine>, AssemblerError> {
+    let mut out = Vec::new();
+    let mut saw_end = false;
 
     for (line_idx, raw_line) in source.lines().enumerate() {
         let line_no = line_idx + 1;
-        let line = strip_comments(raw_line).trim();
-        if line.is_empty() {
+        if saw_end {
             continue;
         }
 
-        let mut parts = line.splitn(2, char::is_whitespace);
-        let mnemonic = parts.next().unwrap().trim().to_ascii_uppercase();
-        let operand = parts.next().unwrap_or("").trim();
-        if mnemonic.is_empty() {
+        let line = strip_hash_and_semicolon_comments(raw_line);
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with('*') {
             continue;
         }
 
-        if program_counter >= 4000 {
-            return Err(asm_syntax(line_no, "program exceeds MIX memory size"));
+        let parsed = parse_logical_line(line, line_no, out.len())?;
+        if matches!(
+            parsed.kind,
+            LineKind::Directive {
+                directive: Directive::End,
+                ..
+            }
+        ) {
+            saw_end = true;
         }
-
-        let instruction = parse_instruction(&mnemonic, operand, line_no)?;
-        state.set_memory_raw(
-            program_counter,
-            instruction.encode(DEFAULT_BYTE_SIZE),
-        )?;
-        program_counter += 1;
+        out.push(parsed);
     }
+
+    if !saw_end {
+        return Err(asm_syntax(1, "missing mandatory `END` directive"));
+    }
+
+    Ok(out)
+}
+
+fn parse_logical_line(
+    line: &str,
+    line_no: usize,
+    order: usize,
+) -> Result<ParsedLine, AssemblerError> {
+    let (first, rest_after_first) = take_token(line).ok_or_else(|| {
+        asm_syntax(line_no, "line must contain a mnemonic or directive")
+    })?;
+
+    let first_up = first.to_ascii_uppercase();
+    let (label, mnemonic, rest) = if is_opcode_or_directive(&first_up) {
+        (None, first_up, rest_after_first)
+    } else {
+        let (mnemonic_token, rest_after_mnemonic) =
+            take_token(rest_after_first).ok_or_else(|| {
+                asm_syntax(line_no, "missing mnemonic after label")
+            })?;
+        (
+            Some(first_up),
+            mnemonic_token.to_ascii_uppercase(),
+            rest_after_mnemonic,
+        )
+    };
+
+    let operand = parse_operand_text(&mnemonic, rest, line_no)?;
+
+    let kind = if let Some(directive) = parse_directive(&mnemonic) {
+        LineKind::Directive { directive, operand }
+    } else {
+        LineKind::Instruction { mnemonic, operand }
+    };
+
+    Ok(ParsedLine {
+        line_no,
+        order,
+        label,
+        kind,
+    })
+}
+
+fn first_pass(lines: &[ParsedLine]) -> Result<FirstPass, AssemblerError> {
+    let mut items = Vec::new();
+    let mut symbols = SymbolTables::new();
+    let mut location_counter = 0_i64;
+    let mut end_start = None;
+
+    for line in lines {
+        match &line.kind {
+            LineKind::Directive {
+                directive: Directive::Equ,
+                operand,
+            } => {
+                let label = line.label.as_ref().ok_or_else(|| {
+                    asm_syntax(line.line_no, "`EQU` requires a label")
+                })?;
+                let eq_val = eval_w_expression(
+                    operand,
+                    &EvalContext {
+                        symbols: &symbols,
+                        line_no: line.line_no,
+                        order: line.order,
+                        location: location_counter,
+                        allow_future_standalone: false,
+                        expression_text: operand,
+                    },
+                    OperandComponent::WExpr,
+                )?;
+                symbols.define(label, eq_val, line.order, line.line_no)?;
+            }
+            _ => {
+                if let Some(label) = line.label.as_deref() {
+                    symbols.define(
+                        label,
+                        location_counter,
+                        line.order,
+                        line.line_no,
+                    )?;
+                }
+
+                match &line.kind {
+                    LineKind::Instruction { mnemonic, operand } => {
+                        items.push(AsmItem {
+                            line_no: line.line_no,
+                            order: line.order,
+                            location: location_counter,
+                            kind: ItemKind::Instruction {
+                                mnemonic: mnemonic.clone(),
+                                operand: operand.clone(),
+                            },
+                        });
+                        location_counter += 1;
+                    }
+                    LineKind::Directive {
+                        directive: Directive::Orig,
+                        operand,
+                    } => {
+                        let new_location = eval_w_expression(
+                            operand,
+                            &EvalContext {
+                                symbols: &symbols,
+                                line_no: line.line_no,
+                                order: line.order,
+                                location: location_counter,
+                                allow_future_standalone: false,
+                                expression_text: operand,
+                            },
+                            OperandComponent::WExpr,
+                        )?;
+                        ensure_location_in_memory(new_location, line.line_no)?;
+                        location_counter = new_location;
+                    }
+                    LineKind::Directive {
+                        directive: Directive::Con,
+                        operand,
+                    } => {
+                        items.push(AsmItem {
+                            line_no: line.line_no,
+                            order: line.order,
+                            location: location_counter,
+                            kind: ItemKind::Con {
+                                operand: operand.clone(),
+                            },
+                        });
+                        location_counter += 1;
+                    }
+                    LineKind::Directive {
+                        directive: Directive::Alf,
+                        operand,
+                    } => {
+                        items.push(AsmItem {
+                            line_no: line.line_no,
+                            order: line.order,
+                            location: location_counter,
+                            kind: ItemKind::Alf {
+                                operand: operand.clone(),
+                            },
+                        });
+                        location_counter += 1;
+                    }
+                    LineKind::Directive {
+                        directive: Directive::End,
+                        operand,
+                    } => {
+                        let start = eval_w_expression(
+                            operand,
+                            &EvalContext {
+                                symbols: &symbols,
+                                line_no: line.line_no,
+                                order: line.order,
+                                location: location_counter,
+                                allow_future_standalone: false,
+                                expression_text: operand,
+                            },
+                            OperandComponent::WExpr,
+                        )?;
+                        ensure_location_in_memory(start, line.line_no)?;
+                        end_start = Some(start);
+                    }
+                    LineKind::Directive {
+                        directive: Directive::Equ,
+                        ..
+                    } => {}
+                }
+            }
+        }
+    }
+
+    let end_start =
+        end_start.ok_or_else(|| asm_syntax(1, "missing `END` directive"))?;
+
+    Ok(FirstPass {
+        items,
+        symbols,
+        end_start,
+        literal_start: location_counter,
+    })
+}
+
+fn second_pass(first: &FirstPass) -> Result<MixState, AssemblerError> {
+    let mut state = MixState::blank(DEFAULT_BYTE_SIZE)?;
+    let mut literal_entries: Vec<LiteralEntry> = Vec::new();
+    let mut next_literal_addr = first.literal_start;
+
+    for item in &first.items {
+        ensure_location_in_memory(item.location, item.line_no)?;
+        let ctx = EvalContext {
+            symbols: &first.symbols,
+            line_no: item.line_no,
+            order: item.order,
+            location: item.location,
+            allow_future_standalone: false,
+            expression_text: "",
+        };
+
+        let encoded = match &item.kind {
+            ItemKind::Instruction { mnemonic, operand } => {
+                let mut op_ctx = ctx.clone();
+                op_ctx.expression_text = operand;
+                let instruction = build_instruction(
+                    mnemonic,
+                    operand,
+                    &mut op_ctx,
+                    &mut literal_entries,
+                    &mut next_literal_addr,
+                )?;
+                instruction.encode(DEFAULT_BYTE_SIZE)
+            }
+            ItemKind::Con { operand } => {
+                let value = eval_w_expression(
+                    operand,
+                    &EvalContext {
+                        expression_text: operand,
+                        ..ctx.clone()
+                    },
+                    OperandComponent::WExpr,
+                )?;
+                MixWord::from_signed(value, DEFAULT_BYTE_SIZE)
+            }
+            ItemKind::Alf { operand } => {
+                assemble_alf_word(operand, item.line_no)?
+            }
+        };
+
+        state.set_memory_raw(item.location as usize, encoded)?;
+    }
+
+    for lit in &literal_entries {
+        ensure_location_in_memory(lit.addr, lit.line_no)?;
+        let value = eval_w_expression(
+            &lit.wexpr,
+            &EvalContext {
+                symbols: &first.symbols,
+                line_no: lit.line_no,
+                order: lit.order,
+                location: lit.addr,
+                allow_future_standalone: false,
+                expression_text: &lit.wexpr,
+            },
+            OperandComponent::WExpr,
+        )?;
+        state.set_memory_raw(
+            lit.addr as usize,
+            MixWord::from_signed(value, DEFAULT_BYTE_SIZE),
+        )?;
+    }
+
+    state.set_instruction_counter(first.end_start as u16)?;
 
     Ok(state)
 }
 
-/// Parses one mnemonic plus operand text into a decoded instruction.
-fn parse_instruction(
+fn ensure_location_in_memory(
+    location: i64,
+    line_no: usize,
+) -> Result<(), AssemblerError> {
+    if !(0..MIX_MEMORY_SIZE).contains(&location) {
+        return Err(asm_syntax(
+            line_no,
+            &format!("address `{location}` out of MIX memory range"),
+        ));
+    }
+    Ok(())
+}
+
+fn assemble_alf_word(
+    operand: &str,
+    line_no: usize,
+) -> Result<MixWord, AssemblerError> {
+    let text = parse_alf_text(operand, line_no)?;
+    let words = encode_text_to_words(&text).map_err(|err| match err {
+        MixCharError::UnsupportedCharacter(ch) => {
+            asm_syntax(line_no, &format!("unsupported ALF character `{ch}`"))
+        }
+    })?;
+    let value = words.first().copied().unwrap_or(0);
+    Ok(MixWord::from_signed(value, DEFAULT_BYTE_SIZE))
+}
+
+fn parse_alf_text(
+    operand: &str,
+    line_no: usize,
+) -> Result<String, AssemblerError> {
+    let trimmed = operand.trim();
+    if trimmed.is_empty() {
+        return Err(asm_syntax(line_no, "`ALF` requires an operand"));
+    }
+
+    let mut text = if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        if trimmed.len() < 2 {
+            return Err(asm_syntax(line_no, "invalid quoted `ALF` operand"));
+        }
+        trimmed[1..trimmed.len() - 1].to_owned()
+    } else {
+        trimmed.to_owned()
+    };
+
+    if text.chars().count() > 5 {
+        return Err(asm_syntax(
+            line_no,
+            "`ALF` operand must contain at most 5 characters",
+        ));
+    }
+    while text.chars().count() < 5 {
+        text.push(' ');
+    }
+    Ok(text)
+}
+
+fn parse_operand_text(
+    mnemonic: &str,
+    rest: &str,
+    line_no: usize,
+) -> Result<String, AssemblerError> {
+    let trimmed = rest.trim_start();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+
+    if mnemonic == "ALF" {
+        if trimmed.starts_with('"') || trimmed.starts_with('\'') {
+            let quote = trimmed.chars().next().unwrap();
+            let end_idx = trimmed[1..].find(quote).ok_or_else(|| {
+                asm_syntax(line_no, "unterminated quoted `ALF` operand")
+            })? + 1;
+            return Ok(trimmed[..=end_idx].to_owned());
+        }
+        let (token, _) = take_token(trimmed)
+            .ok_or_else(|| asm_syntax(line_no, "`ALF` requires an operand"))?;
+        return Ok(token.to_owned());
+    }
+
+    let (token, _) = take_token(trimmed)
+        .ok_or_else(|| asm_syntax(line_no, "invalid operand"))?;
+    Ok(token.to_owned())
+}
+
+fn build_instruction(
     mnemonic: &str,
     operand_text: &str,
-    line_no: usize,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
 ) -> Result<Instruction, AssemblerError> {
     match mnemonic {
         "NOP" => {
-            no_operand_instruction(operand_text, line_no, Instruction::Nop)
+            no_operand_instruction(operand_text, ctx.line_no, Instruction::Nop)
         }
         "NUM" => {
-            no_operand_instruction(operand_text, line_no, Instruction::Num)
+            no_operand_instruction(operand_text, ctx.line_no, Instruction::Num)
         }
         "CHAR" => {
-            no_operand_instruction(operand_text, line_no, Instruction::Char)
+            no_operand_instruction(operand_text, ctx.line_no, Instruction::Char)
         }
         "HLT" => {
-            no_operand_instruction(operand_text, line_no, Instruction::Hlt)
+            no_operand_instruction(operand_text, ctx.line_no, Instruction::Hlt)
         }
-
-        "ADD" => {
-            operand_instruction(operand_text, line_no, 5, Instruction::Add)
-        }
-        "SUB" => {
-            operand_instruction(operand_text, line_no, 5, Instruction::Sub)
-        }
-        "MUL" => {
-            operand_instruction(operand_text, line_no, 5, Instruction::Mul)
-        }
-        "DIV" => {
-            operand_instruction(operand_text, line_no, 5, Instruction::Div)
-        }
+        "ADD" => operand_instruction(
+            operand_text,
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+            Instruction::Add,
+        ),
+        "SUB" => operand_instruction(
+            operand_text,
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+            Instruction::Sub,
+        ),
+        "MUL" => operand_instruction(
+            operand_text,
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+            Instruction::Mul,
+        ),
+        "DIV" => operand_instruction(
+            operand_text,
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+            Instruction::Div,
+        ),
         "MOVE" => {
-            let op = parse_operand(operand_text, line_no, 0)?;
+            let op = parse_operand_value(
+                operand_text,
+                0,
+                false,
+                true,
+                ctx,
+                literal_entries,
+                next_literal_addr,
+            )?;
             Ok(Instruction::Move {
-                addr: address_from(&op),
+                addr: AddressSpec {
+                    address: op.address,
+                    index: op.index,
+                },
                 count: op.field,
             })
         }
-
-        "SLA" => shift_instruction(operand_text, line_no, ShiftMode::Sla),
-        "SRA" => shift_instruction(operand_text, line_no, ShiftMode::Sra),
-        "SLAX" => shift_instruction(operand_text, line_no, ShiftMode::Slax),
-        "SRAX" => shift_instruction(operand_text, line_no, ShiftMode::Srax),
-        "SLC" => shift_instruction(operand_text, line_no, ShiftMode::Slc),
-        "SRC" => shift_instruction(operand_text, line_no, ShiftMode::Src),
-        "SLB" => shift_instruction(operand_text, line_no, ShiftMode::Slb),
-        "SRB" => shift_instruction(operand_text, line_no, ShiftMode::Srb),
-
-        "LDA" => load_instruction(operand_text, line_no, LoadTarget::A, false),
-        "LD1" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(1), false)
-        }
-        "LD2" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(2), false)
-        }
-        "LD3" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(3), false)
-        }
-        "LD4" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(4), false)
-        }
-        "LD5" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(5), false)
-        }
-        "LD6" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(6), false)
-        }
-        "LDX" => load_instruction(operand_text, line_no, LoadTarget::X, false),
-        "LDAN" => load_instruction(operand_text, line_no, LoadTarget::A, true),
-        "LD1N" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(1), true)
-        }
-        "LD2N" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(2), true)
-        }
-        "LD3N" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(3), true)
-        }
-        "LD4N" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(4), true)
-        }
-        "LD5N" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(5), true)
-        }
-        "LD6N" => {
-            load_instruction(operand_text, line_no, LoadTarget::I(6), true)
-        }
-        "LDXN" => load_instruction(operand_text, line_no, LoadTarget::X, true),
-
-        "STA" => store_instruction(operand_text, line_no, StoreSource::A, 5),
-        "ST1" => store_instruction(operand_text, line_no, StoreSource::I(1), 5),
-        "ST2" => store_instruction(operand_text, line_no, StoreSource::I(2), 5),
-        "ST3" => store_instruction(operand_text, line_no, StoreSource::I(3), 5),
-        "ST4" => store_instruction(operand_text, line_no, StoreSource::I(4), 5),
-        "ST5" => store_instruction(operand_text, line_no, StoreSource::I(5), 5),
-        "ST6" => store_instruction(operand_text, line_no, StoreSource::I(6), 5),
-        "STX" => store_instruction(operand_text, line_no, StoreSource::X, 5),
-        "STJ" => store_instruction(operand_text, line_no, StoreSource::J, 2),
-        "STZ" => store_instruction(operand_text, line_no, StoreSource::Zero, 5),
-
-        "JBUS" => io_instruction(operand_text, line_no, IoKind::Jbus),
-        "IOC" => io_instruction(operand_text, line_no, IoKind::Ioc),
-        "IN" => io_instruction(operand_text, line_no, IoKind::In),
-        "OUT" => io_instruction(operand_text, line_no, IoKind::Out),
-        "JRED" => io_instruction(operand_text, line_no, IoKind::Jred),
-
-        "JMP" => jump_instruction(operand_text, line_no, JumpCondition::Jmp),
-        "JSJ" => jump_instruction(operand_text, line_no, JumpCondition::Jsj),
-        "JOV" => jump_instruction(operand_text, line_no, JumpCondition::Jov),
-        "JNOV" => jump_instruction(operand_text, line_no, JumpCondition::Jnov),
-        "JL" => jump_instruction(operand_text, line_no, JumpCondition::Jl),
-        "JE" => jump_instruction(operand_text, line_no, JumpCondition::Je),
-        "JG" => jump_instruction(operand_text, line_no, JumpCondition::Jg),
-        "JGE" => jump_instruction(operand_text, line_no, JumpCondition::Jge),
-        "JNE" => jump_instruction(operand_text, line_no, JumpCondition::Jne),
-        "JLE" => jump_instruction(operand_text, line_no, JumpCondition::Jle),
-
+        "SLA" => shift_instruction(
+            operand_text,
+            ShiftMode::Sla,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "SRA" => shift_instruction(
+            operand_text,
+            ShiftMode::Sra,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "SLAX" => shift_instruction(
+            operand_text,
+            ShiftMode::Slax,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "SRAX" => shift_instruction(
+            operand_text,
+            ShiftMode::Srax,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "SLC" => shift_instruction(
+            operand_text,
+            ShiftMode::Slc,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "SRC" => shift_instruction(
+            operand_text,
+            ShiftMode::Src,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "SLB" => shift_instruction(
+            operand_text,
+            ShiftMode::Slb,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "SRB" => shift_instruction(
+            operand_text,
+            ShiftMode::Srb,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LDA" => load_instruction(
+            operand_text,
+            LoadTarget::A,
+            false,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD1" => load_instruction(
+            operand_text,
+            LoadTarget::I(1),
+            false,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD2" => load_instruction(
+            operand_text,
+            LoadTarget::I(2),
+            false,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD3" => load_instruction(
+            operand_text,
+            LoadTarget::I(3),
+            false,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD4" => load_instruction(
+            operand_text,
+            LoadTarget::I(4),
+            false,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD5" => load_instruction(
+            operand_text,
+            LoadTarget::I(5),
+            false,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD6" => load_instruction(
+            operand_text,
+            LoadTarget::I(6),
+            false,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LDX" => load_instruction(
+            operand_text,
+            LoadTarget::X,
+            false,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LDAN" => load_instruction(
+            operand_text,
+            LoadTarget::A,
+            true,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD1N" => load_instruction(
+            operand_text,
+            LoadTarget::I(1),
+            true,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD2N" => load_instruction(
+            operand_text,
+            LoadTarget::I(2),
+            true,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD3N" => load_instruction(
+            operand_text,
+            LoadTarget::I(3),
+            true,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD4N" => load_instruction(
+            operand_text,
+            LoadTarget::I(4),
+            true,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD5N" => load_instruction(
+            operand_text,
+            LoadTarget::I(5),
+            true,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LD6N" => load_instruction(
+            operand_text,
+            LoadTarget::I(6),
+            true,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "LDXN" => load_instruction(
+            operand_text,
+            LoadTarget::X,
+            true,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "STA" => store_instruction(
+            operand_text,
+            StoreSource::A,
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "ST1" => store_instruction(
+            operand_text,
+            StoreSource::I(1),
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "ST2" => store_instruction(
+            operand_text,
+            StoreSource::I(2),
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "ST3" => store_instruction(
+            operand_text,
+            StoreSource::I(3),
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "ST4" => store_instruction(
+            operand_text,
+            StoreSource::I(4),
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "ST5" => store_instruction(
+            operand_text,
+            StoreSource::I(5),
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "ST6" => store_instruction(
+            operand_text,
+            StoreSource::I(6),
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "STX" => store_instruction(
+            operand_text,
+            StoreSource::X,
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "STJ" => store_instruction(
+            operand_text,
+            StoreSource::J,
+            2,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "STZ" => store_instruction(
+            operand_text,
+            StoreSource::Zero,
+            5,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JBUS" => io_instruction(
+            operand_text,
+            IoKind::Jbus,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "IOC" => io_instruction(
+            operand_text,
+            IoKind::Ioc,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "IN" => io_instruction(
+            operand_text,
+            IoKind::In,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "OUT" => io_instruction(
+            operand_text,
+            IoKind::Out,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JRED" => io_instruction(
+            operand_text,
+            IoKind::Jred,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JMP" => jump_instruction(
+            operand_text,
+            JumpCondition::Jmp,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JSJ" => jump_instruction(
+            operand_text,
+            JumpCondition::Jsj,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JOV" => jump_instruction(
+            operand_text,
+            JumpCondition::Jov,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JNOV" => jump_instruction(
+            operand_text,
+            JumpCondition::Jnov,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JL" => jump_instruction(
+            operand_text,
+            JumpCondition::Jl,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JE" => jump_instruction(
+            operand_text,
+            JumpCondition::Je,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JG" => jump_instruction(
+            operand_text,
+            JumpCondition::Jg,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JGE" => jump_instruction(
+            operand_text,
+            JumpCondition::Jge,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JNE" => jump_instruction(
+            operand_text,
+            JumpCondition::Jne,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "JLE" => jump_instruction(
+            operand_text,
+            JumpCondition::Jle,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
         "JAN" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::A,
             RegisterJumpCondition::Negative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JAZ" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::A,
             RegisterJumpCondition::Zero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JAP" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::A,
             RegisterJumpCondition::Positive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JANN" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::A,
             RegisterJumpCondition::NonNegative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JANZ" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::A,
             RegisterJumpCondition::NonZero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JANP" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::A,
             RegisterJumpCondition::NonPositive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JAE" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::A,
             RegisterJumpCondition::Even,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JAO" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::A,
             RegisterJumpCondition::Odd,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
-
         "J1N" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(1),
             RegisterJumpCondition::Negative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J1Z" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(1),
             RegisterJumpCondition::Zero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J1P" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(1),
             RegisterJumpCondition::Positive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J1NN" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(1),
             RegisterJumpCondition::NonNegative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J1NZ" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(1),
             RegisterJumpCondition::NonZero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J1NP" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(1),
             RegisterJumpCondition::NonPositive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
-
         "J2N" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(2),
             RegisterJumpCondition::Negative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J2Z" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(2),
             RegisterJumpCondition::Zero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J2P" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(2),
             RegisterJumpCondition::Positive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J2NN" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(2),
             RegisterJumpCondition::NonNegative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J2NZ" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(2),
             RegisterJumpCondition::NonZero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J2NP" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(2),
             RegisterJumpCondition::NonPositive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
-
         "J3N" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(3),
             RegisterJumpCondition::Negative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J3Z" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(3),
             RegisterJumpCondition::Zero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J3P" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(3),
             RegisterJumpCondition::Positive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J3NN" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(3),
             RegisterJumpCondition::NonNegative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J3NZ" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(3),
             RegisterJumpCondition::NonZero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J3NP" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(3),
             RegisterJumpCondition::NonPositive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
-
         "J4N" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(4),
             RegisterJumpCondition::Negative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J4Z" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(4),
             RegisterJumpCondition::Zero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J4P" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(4),
             RegisterJumpCondition::Positive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J4NN" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(4),
             RegisterJumpCondition::NonNegative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J4NZ" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(4),
             RegisterJumpCondition::NonZero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J4NP" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(4),
             RegisterJumpCondition::NonPositive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
-
         "J5N" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(5),
             RegisterJumpCondition::Negative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J5Z" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(5),
             RegisterJumpCondition::Zero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J5P" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(5),
             RegisterJumpCondition::Positive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J5NN" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(5),
             RegisterJumpCondition::NonNegative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J5NZ" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(5),
             RegisterJumpCondition::NonZero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J5NP" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(5),
             RegisterJumpCondition::NonPositive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
-
         "J6N" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(6),
             RegisterJumpCondition::Negative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J6Z" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(6),
             RegisterJumpCondition::Zero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J6P" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(6),
             RegisterJumpCondition::Positive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J6NN" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(6),
             RegisterJumpCondition::NonNegative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J6NZ" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(6),
             RegisterJumpCondition::NonZero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "J6NP" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::I(6),
             RegisterJumpCondition::NonPositive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
-
         "JXN" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::X,
             RegisterJumpCondition::Negative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JXZ" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::X,
             RegisterJumpCondition::Zero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JXP" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::X,
             RegisterJumpCondition::Positive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JXNN" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::X,
             RegisterJumpCondition::NonNegative,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JXNZ" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::X,
             RegisterJumpCondition::NonZero,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JXNP" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::X,
             RegisterJumpCondition::NonPositive,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JXE" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::X,
             RegisterJumpCondition::Even,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "JXO" => register_jump_instruction(
             operand_text,
-            line_no,
             RegisterJumpTarget::X,
             RegisterJumpCondition::Odd,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
-
         "INCA" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::A,
             AddrTransferMode::Inc,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "DECA" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::A,
             AddrTransferMode::Dec,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENTA" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::A,
             AddrTransferMode::Ent,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENNA" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::A,
             AddrTransferMode::Enn,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "INC1" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(1),
             AddrTransferMode::Inc,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "DEC1" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(1),
             AddrTransferMode::Dec,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENT1" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(1),
             AddrTransferMode::Ent,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENN1" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(1),
             AddrTransferMode::Enn,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "INC2" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(2),
             AddrTransferMode::Inc,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "DEC2" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(2),
             AddrTransferMode::Dec,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENT2" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(2),
             AddrTransferMode::Ent,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENN2" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(2),
             AddrTransferMode::Enn,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "INC3" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(3),
             AddrTransferMode::Inc,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "DEC3" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(3),
             AddrTransferMode::Dec,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENT3" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(3),
             AddrTransferMode::Ent,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENN3" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(3),
             AddrTransferMode::Enn,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "INC4" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(4),
             AddrTransferMode::Inc,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "DEC4" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(4),
             AddrTransferMode::Dec,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENT4" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(4),
             AddrTransferMode::Ent,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENN4" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(4),
             AddrTransferMode::Enn,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "INC5" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(5),
             AddrTransferMode::Inc,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "DEC5" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(5),
             AddrTransferMode::Dec,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENT5" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(5),
             AddrTransferMode::Ent,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENN5" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(5),
             AddrTransferMode::Enn,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "INC6" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(6),
             AddrTransferMode::Inc,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "DEC6" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(6),
             AddrTransferMode::Dec,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENT6" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(6),
             AddrTransferMode::Ent,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENN6" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::I(6),
             AddrTransferMode::Enn,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "INCX" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::X,
             AddrTransferMode::Inc,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "DECX" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::X,
             AddrTransferMode::Dec,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENTX" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::X,
             AddrTransferMode::Ent,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
         "ENNX" => addr_transfer_instruction(
             operand_text,
-            line_no,
             AddrTransferTarget::X,
             AddrTransferMode::Enn,
+            ctx,
+            literal_entries,
+            next_literal_addr,
         ),
-
-        "CMPA" => compare_instruction(operand_text, line_no, CompareTarget::A),
-        "CMP1" => {
-            compare_instruction(operand_text, line_no, CompareTarget::I(1))
-        }
-        "CMP2" => {
-            compare_instruction(operand_text, line_no, CompareTarget::I(2))
-        }
-        "CMP3" => {
-            compare_instruction(operand_text, line_no, CompareTarget::I(3))
-        }
-        "CMP4" => {
-            compare_instruction(operand_text, line_no, CompareTarget::I(4))
-        }
-        "CMP5" => {
-            compare_instruction(operand_text, line_no, CompareTarget::I(5))
-        }
-        "CMP6" => {
-            compare_instruction(operand_text, line_no, CompareTarget::I(6))
-        }
-        "CMPX" => compare_instruction(operand_text, line_no, CompareTarget::X),
-
+        "CMPA" => compare_instruction(
+            operand_text,
+            CompareTarget::A,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "CMP1" => compare_instruction(
+            operand_text,
+            CompareTarget::I(1),
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "CMP2" => compare_instruction(
+            operand_text,
+            CompareTarget::I(2),
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "CMP3" => compare_instruction(
+            operand_text,
+            CompareTarget::I(3),
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "CMP4" => compare_instruction(
+            operand_text,
+            CompareTarget::I(4),
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "CMP5" => compare_instruction(
+            operand_text,
+            CompareTarget::I(5),
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "CMP6" => compare_instruction(
+            operand_text,
+            CompareTarget::I(6),
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
+        "CMPX" => compare_instruction(
+            operand_text,
+            CompareTarget::X,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        ),
         _ => Err(asm_syntax(
-            line_no,
+            ctx.line_no,
             &format!("unknown mnemonic `{mnemonic}`"),
         )),
     }
 }
 
-/// Accepts mnemonics that forbid operands and validates emptiness.
 fn no_operand_instruction(
     operand_text: &str,
     line_no: usize,
@@ -755,78 +1783,132 @@ fn no_operand_instruction(
     Ok(instruction)
 }
 
-/// Parses a general operand and builds an instruction from it.
+#[derive(Debug, Clone, Copy)]
+struct EvaluatedOperand {
+    address: i16,
+    index: u8,
+    field: u8,
+    has_field: bool,
+}
+
 fn operand_instruction<F>(
     operand_text: &str,
-    line_no: usize,
     default_field: u8,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
     builder: F,
 ) -> Result<Instruction, AssemblerError>
 where
     F: FnOnce(OperandSpec) -> Instruction,
 {
-    let parsed = parse_operand(operand_text, line_no, default_field)?;
-    Ok(builder(operand_from(&parsed)))
+    let op = parse_operand_value(
+        operand_text,
+        default_field,
+        true,
+        true,
+        ctx,
+        literal_entries,
+        next_literal_addr,
+    )?;
+    Ok(builder(OperandSpec {
+        addr: AddressSpec {
+            address: op.address,
+            index: op.index,
+        },
+        field: op.field,
+    }))
 }
 
-/// Parses an address-only operand and enforces fixed field semantics.
 fn fixed_address_instruction<F>(
     operand_text: &str,
-    line_no: usize,
     fixed_field: u8,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
     builder: F,
 ) -> Result<Instruction, AssemblerError>
 where
     F: FnOnce(AddressSpec) -> Instruction,
 {
-    let parsed = parse_operand(operand_text, line_no, fixed_field)?;
-    if parsed.has_field {
+    let op = parse_operand_value(
+        operand_text,
+        fixed_field,
+        true,
+        true,
+        ctx,
+        literal_entries,
+        next_literal_addr,
+    )?;
+    if op.has_field {
         return Err(asm_syntax(
-            line_no,
+            ctx.line_no,
             "field cannot be overridden for this mnemonic",
         ));
     }
-    Ok(builder(address_from(&parsed)))
+    Ok(builder(AddressSpec {
+        address: op.address,
+        index: op.index,
+    }))
 }
 
-/// Builds one of the `SL*`/`SR*` instruction variants.
 fn shift_instruction(
     operand_text: &str,
-    line_no: usize,
     mode: ShiftMode,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
 ) -> Result<Instruction, AssemblerError> {
-    fixed_address_instruction(operand_text, line_no, 0, |addr| {
-        Instruction::Shift { addr, mode }
-    })
+    fixed_address_instruction(
+        operand_text,
+        0,
+        ctx,
+        literal_entries,
+        next_literal_addr,
+        |addr| Instruction::Shift { addr, mode },
+    )
 }
 
-/// Builds one of the `LD*` instruction variants.
 fn load_instruction(
     operand_text: &str,
-    line_no: usize,
     target: LoadTarget,
     negate: bool,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
 ) -> Result<Instruction, AssemblerError> {
-    operand_instruction(operand_text, line_no, 5, |operand| Instruction::Load {
-        target,
-        negate,
-        operand,
-    })
+    operand_instruction(
+        operand_text,
+        5,
+        ctx,
+        literal_entries,
+        next_literal_addr,
+        |operand| Instruction::Load {
+            target,
+            negate,
+            operand,
+        },
+    )
 }
 
-/// Builds one of the `ST*` instruction variants.
 fn store_instruction(
     operand_text: &str,
-    line_no: usize,
     source: StoreSource,
     default_field: u8,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
 ) -> Result<Instruction, AssemblerError> {
-    operand_instruction(operand_text, line_no, default_field, |operand| {
-        Instruction::Store { source, operand }
-    })
+    operand_instruction(
+        operand_text,
+        default_field,
+        ctx,
+        literal_entries,
+        next_literal_addr,
+        |operand| Instruction::Store { source, operand },
+    )
 }
 
-/// Internal selector for the I/O mnemonic family.
 enum IoKind {
     Jbus,
     Ioc,
@@ -835,171 +1917,131 @@ enum IoKind {
     Jred,
 }
 
-/// Builds one of the I/O instruction variants (`JBUS`, `IOC`, `IN`, `OUT`, `JRED`).
 fn io_instruction(
     operand_text: &str,
-    line_no: usize,
     kind: IoKind,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
 ) -> Result<Instruction, AssemblerError> {
-    let (addr, unit) = parse_io_operand(operand_text, line_no)?;
-    Ok(match kind {
-        IoKind::Jbus => Instruction::Jbus { addr, unit },
-        IoKind::Ioc => Instruction::Ioc { addr, unit },
-        IoKind::In => Instruction::In { addr, unit },
-        IoKind::Out => Instruction::Out { addr, unit },
-        IoKind::Jred => Instruction::Jred { addr, unit },
-    })
-}
-
-/// Parses I/O operand syntax `address[,index](unit)`.
-fn parse_io_operand(
-    operand_text: &str,
-    line_no: usize,
-) -> Result<(AddressSpec, u8), AssemblerError> {
-    if operand_text.is_empty() {
-        return Ok((
-            AddressSpec {
-                address: 0,
-                index: 0,
-            },
-            0,
-        ));
-    }
-
-    let mut core = operand_text;
-    let mut unit = 0u8;
-
-    if let Some(open_idx) = core.find('(') {
-        if !core.ends_with(')') {
-            return Err(asm_syntax(
-                line_no,
-                "device unit specification must end with `)`",
-            ));
-        }
-        let close_idx = core.len() - 1;
-        if open_idx >= close_idx {
-            return Err(asm_syntax(line_no, "empty device unit specification"));
-        }
-
-        let unit_text = core[open_idx + 1..close_idx].trim();
-        unit = unit_text.parse::<u8>().map_err(|_| {
-            asm_syntax(line_no, &format!("invalid device unit `{unit_text}`"))
-        })?;
-        core = core[..open_idx].trim();
-    }
-
-    let (address_text, index_text) = if let Some(comma_idx) = core.find(',') {
-        (core[..comma_idx].trim(), Some(core[comma_idx + 1..].trim()))
-    } else {
-        (core.trim(), None)
-    };
-
-    let address = if address_text.is_empty() {
-        0
-    } else {
-        let parsed = address_text.parse::<i32>().map_err(|_| {
-            asm_syntax(line_no, &format!("invalid address `{address_text}`"))
-        })?;
-        i16::try_from(parsed).map_err(|_| {
-            asm_syntax(line_no, &format!("address `{parsed}` out of range"))
-        })?
-    };
-
-    let index = match index_text {
-        Some(text) if !text.is_empty() => {
-            let parsed = text.parse::<u8>().map_err(|_| {
-                asm_syntax(line_no, &format!("invalid index register `{text}`"))
-            })?;
-            if parsed > 6 {
-                return Err(asm_syntax(
-                    line_no,
-                    &format!("index register `{parsed}` out of range"),
-                ));
-            }
-            parsed
-        }
-        Some(_) => {
-            return Err(asm_syntax(
-                line_no,
-                "missing index register after `,`",
-            ));
-        }
-        None => 0,
-    };
-
-    Ok((AddressSpec { address, index }, unit))
-}
-
-/// Builds one of the opcode-39 jump instruction variants.
-fn jump_instruction(
-    operand_text: &str,
-    line_no: usize,
-    cond: JumpCondition,
-) -> Result<Instruction, AssemblerError> {
-    fixed_address_instruction(operand_text, line_no, 0, |addr| {
-        Instruction::Jump { addr, cond }
-    })
-}
-
-/// Builds one of the register-jump instruction variants.
-fn register_jump_instruction(
-    operand_text: &str,
-    line_no: usize,
-    target: RegisterJumpTarget,
-    cond: RegisterJumpCondition,
-) -> Result<Instruction, AssemblerError> {
-    fixed_address_instruction(operand_text, line_no, 0, |addr| {
-        Instruction::RegisterJump { addr, target, cond }
-    })
-}
-
-/// Builds one of the address-transfer instruction variants.
-fn addr_transfer_instruction(
-    operand_text: &str,
-    line_no: usize,
-    target: AddrTransferTarget,
-    mode: AddrTransferMode,
-) -> Result<Instruction, AssemblerError> {
-    fixed_address_instruction(operand_text, line_no, 0, |addr| {
-        Instruction::AddrTransfer { addr, target, mode }
-    })
-}
-
-/// Builds one of the compare instruction variants.
-fn compare_instruction(
-    operand_text: &str,
-    line_no: usize,
-    target: CompareTarget,
-) -> Result<Instruction, AssemblerError> {
-    operand_instruction(operand_text, line_no, 5, |operand| {
-        Instruction::Compare { target, operand }
-    })
-}
-
-/// Converts parsed operand to address-only representation.
-fn address_from(op: &ParsedOperand) -> AddressSpec {
-    AddressSpec {
+    let op = parse_operand_value(
+        operand_text,
+        0,
+        false,
+        false,
+        ctx,
+        literal_entries,
+        next_literal_addr,
+    )?;
+    let addr = AddressSpec {
         address: op.address,
         index: op.index,
-    }
+    };
+    Ok(match kind {
+        IoKind::Jbus => Instruction::Jbus {
+            addr,
+            unit: op.field,
+        },
+        IoKind::Ioc => Instruction::Ioc {
+            addr,
+            unit: op.field,
+        },
+        IoKind::In => Instruction::In {
+            addr,
+            unit: op.field,
+        },
+        IoKind::Out => Instruction::Out {
+            addr,
+            unit: op.field,
+        },
+        IoKind::Jred => Instruction::Jred {
+            addr,
+            unit: op.field,
+        },
+    })
 }
 
-/// Converts parsed operand to full operand representation.
-fn operand_from(op: &ParsedOperand) -> OperandSpec {
-    OperandSpec {
-        addr: address_from(op),
-        field: op.field,
-    }
-}
-
-/// Parses general operand syntax `address[,index][(field)]`.
-fn parse_operand(
+fn jump_instruction(
     operand_text: &str,
-    line_no: usize,
+    cond: JumpCondition,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
+) -> Result<Instruction, AssemblerError> {
+    fixed_address_instruction(
+        operand_text,
+        0,
+        ctx,
+        literal_entries,
+        next_literal_addr,
+        |addr| Instruction::Jump { addr, cond },
+    )
+}
+
+fn register_jump_instruction(
+    operand_text: &str,
+    target: RegisterJumpTarget,
+    cond: RegisterJumpCondition,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
+) -> Result<Instruction, AssemblerError> {
+    fixed_address_instruction(
+        operand_text,
+        0,
+        ctx,
+        literal_entries,
+        next_literal_addr,
+        |addr| Instruction::RegisterJump { addr, target, cond },
+    )
+}
+
+fn addr_transfer_instruction(
+    operand_text: &str,
+    target: AddrTransferTarget,
+    mode: AddrTransferMode,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
+) -> Result<Instruction, AssemblerError> {
+    fixed_address_instruction(
+        operand_text,
+        0,
+        ctx,
+        literal_entries,
+        next_literal_addr,
+        |addr| Instruction::AddrTransfer { addr, target, mode },
+    )
+}
+
+fn compare_instruction(
+    operand_text: &str,
+    target: CompareTarget,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
+) -> Result<Instruction, AssemblerError> {
+    operand_instruction(
+        operand_text,
+        5,
+        ctx,
+        literal_entries,
+        next_literal_addr,
+        |operand| Instruction::Compare { target, operand },
+    )
+}
+
+fn parse_operand_value(
+    operand_text: &str,
     default_field: u8,
-) -> Result<ParsedOperand, AssemblerError> {
+    field_is_fspec: bool,
+    allow_literal_address: bool,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
+) -> Result<EvaluatedOperand, AssemblerError> {
     if operand_text.is_empty() {
-        return Ok(ParsedOperand {
+        return Ok(EvaluatedOperand {
             address: 0,
             index: 0,
             field: default_field,
@@ -1014,123 +2056,631 @@ fn parse_operand(
     if let Some(open_idx) = core.find('(') {
         if !core.ends_with(')') {
             return Err(asm_syntax(
-                line_no,
+                ctx.line_no,
                 "field specification must end with `)`",
             ));
         }
         let close_idx = core.len() - 1;
         if open_idx >= close_idx {
-            return Err(asm_syntax(line_no, "empty field specification"));
+            return Err(asm_syntax(ctx.line_no, "empty field specification"));
         }
         let field_text = core[open_idx + 1..close_idx].trim();
-        field = parse_field(field_text, line_no)?;
+        let value = eval_expression(
+            field_text,
+            &EvalContext {
+                expression_text: field_text,
+                allow_future_standalone: false,
+                ..ctx.clone()
+            },
+            OperandComponent::Field,
+        )?;
+        field = if field_is_fspec {
+            i64_to_field(value, ctx.line_no)?
+        } else {
+            i64_to_u6(value, ctx.line_no, "field")?
+        };
         has_field = true;
         core = core[..open_idx].trim();
     }
 
     let (address_text, index_text) = if let Some(comma_idx) = core.find(',') {
-        (core[..comma_idx].trim(), Some(core[comma_idx + 1..].trim()))
+        (&core[..comma_idx], Some(&core[comma_idx + 1..]))
     } else {
-        (core.trim(), None)
+        (core, None)
     };
 
-    let address = if address_text.is_empty() {
+    let address_val = if address_text.trim().is_empty() {
         0
     } else {
-        let parsed = address_text.parse::<i32>().map_err(|_| {
-            asm_syntax(line_no, &format!("invalid address `{address_text}`"))
-        })?;
-        i16::try_from(parsed).map_err(|_| {
-            asm_syntax(line_no, &format!("address `{parsed}` out of range"))
-        })?
+        eval_address_value(
+            address_text.trim(),
+            allow_literal_address,
+            ctx,
+            literal_entries,
+            next_literal_addr,
+        )?
     };
 
     let index = match index_text {
-        Some(text) if !text.is_empty() => {
-            let parsed = text.parse::<u8>().map_err(|_| {
-                asm_syntax(line_no, &format!("invalid index register `{text}`"))
-            })?;
-            if parsed > 6 {
+        Some(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
                 return Err(asm_syntax(
-                    line_no,
-                    &format!("index register `{parsed}` out of range"),
+                    ctx.line_no,
+                    "missing index expression after `,`",
                 ));
             }
-            parsed
-        }
-        Some(_) => {
-            return Err(asm_syntax(
-                line_no,
-                "missing index register after `,`",
-            ));
+            let value = eval_expression(
+                trimmed,
+                &EvalContext {
+                    expression_text: trimmed,
+                    allow_future_standalone: false,
+                    ..ctx.clone()
+                },
+                OperandComponent::Index,
+            )?;
+            i64_to_index(value, ctx.line_no)?
         }
         None => 0,
     };
 
-    Ok(ParsedOperand {
-        address,
+    Ok(EvaluatedOperand {
+        address: i64_to_i16(address_val, ctx.line_no, "address")?,
         index,
         field,
         has_field,
     })
 }
 
-/// Parses either packed field (`F`) or range field (`L:R`).
-fn parse_field(field_text: &str, line_no: usize) -> Result<u8, AssemblerError> {
-    if field_text.is_empty() {
-        return Err(asm_syntax(line_no, "empty field specification"));
+fn eval_address_value(
+    address_text: &str,
+    allow_literal_address: bool,
+    ctx: &mut EvalContext<'_>,
+    literal_entries: &mut Vec<LiteralEntry>,
+    next_literal_addr: &mut i64,
+) -> Result<i64, AssemblerError> {
+    if allow_literal_address && is_literal_constant(address_text) {
+        ensure_location_in_memory(*next_literal_addr, ctx.line_no)?;
+        let inner = address_text[1..address_text.len() - 1].trim().to_owned();
+        literal_entries.push(LiteralEntry {
+            addr: *next_literal_addr,
+            wexpr: inner,
+            line_no: ctx.line_no,
+            order: ctx.order,
+        });
+        let out = *next_literal_addr;
+        *next_literal_addr += 1;
+        return Ok(out);
     }
 
-    if let Some(colon_idx) = field_text.find(':') {
-        let left_text = field_text[..colon_idx].trim();
-        let right_text = field_text[colon_idx + 1..].trim();
-        let left = parse_field_component(left_text, line_no)?;
-        let right = parse_field_component(right_text, line_no)?;
-        if left > right {
-            return Err(asm_syntax(
-                line_no,
-                "field specification must satisfy L <= R",
-            ));
+    eval_expression(
+        address_text,
+        &EvalContext {
+            expression_text: address_text,
+            allow_future_standalone: is_standalone_symbol_expr(address_text),
+            ..ctx.clone()
+        },
+        OperandComponent::Address,
+    )
+}
+
+fn eval_w_expression(
+    text: &str,
+    ctx: &EvalContext<'_>,
+    component: OperandComponent,
+) -> Result<i64, AssemblerError> {
+    let mut acc = MixWord::ZERO;
+    for term in split_top_level_commas(text) {
+        let (exp_text, fspec_opt) = split_wexpr_term(term, ctx.line_no)?;
+        let exp_value = eval_expression(
+            exp_text,
+            &EvalContext {
+                expression_text: exp_text,
+                allow_future_standalone: false,
+                ..ctx.clone()
+            },
+            component,
+        )?;
+        let source = MixWord::from_signed(exp_value, DEFAULT_BYTE_SIZE);
+
+        let fspec = if let Some(fexpr) = fspec_opt {
+            let fval = eval_expression(
+                fexpr,
+                &EvalContext {
+                    expression_text: fexpr,
+                    allow_future_standalone: false,
+                    ..ctx.clone()
+                },
+                component,
+            )?;
+            i64_to_field(fval, ctx.line_no)?
+        } else {
+            5
+        };
+
+        acc.store_field(fspec, source)?;
+    }
+    Ok(acc.as_signed_i64(DEFAULT_BYTE_SIZE))
+}
+
+fn eval_expression(
+    text: &str,
+    ctx: &EvalContext<'_>,
+    _component: OperandComponent,
+) -> Result<i64, AssemblerError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(asm_syntax(ctx.line_no, "empty expression"));
+    }
+
+    let mut parser = ExprParser {
+        input: trimmed,
+        pos: 0,
+        ctx,
+    };
+    let mut value = parser.parse_signed_atom()?;
+    while let Some(op) = parser.parse_binary_op()? {
+        let rhs = parser.parse_signed_atom()?;
+        value = apply_binary_op(value, rhs, op, ctx.line_no)?;
+    }
+
+    if parser.pos != parser.input.len() {
+        return Err(asm_syntax(
+            ctx.line_no,
+            &format!(
+                "invalid expression near `{}`",
+                &parser.input[parser.pos..]
+            ),
+        ));
+    }
+
+    Ok(value)
+}
+
+fn apply_binary_op(
+    lhs: i64,
+    rhs: i64,
+    op: BinaryOp,
+    line_no: usize,
+) -> Result<i64, AssemblerError> {
+    match op {
+        BinaryOp::Add => Ok(lhs + rhs),
+        BinaryOp::Sub => Ok(lhs - rhs),
+        BinaryOp::Mul => Ok(lhs * rhs),
+        BinaryOp::Div => {
+            if rhs == 0 {
+                return Err(asm_syntax(
+                    line_no,
+                    "division by zero in expression",
+                ));
+            }
+            Ok(lhs / rhs)
         }
-        return Ok(left * 8 + right);
+        BinaryOp::DivLong => {
+            if rhs == 0 {
+                return Err(asm_syntax(
+                    line_no,
+                    "division by zero in expression",
+                ));
+            }
+            let wide = MixWord::from_signed(lhs, DEFAULT_BYTE_SIZE)
+                .magnitude(DEFAULT_BYTE_SIZE)
+                * i64::from(DEFAULT_BYTE_SIZE).pow(5);
+            Ok(wide / rhs)
+        }
+        BinaryOp::Fspec => Ok(lhs * 8 + rhs),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    DivLong,
+    Fspec,
+}
+
+struct ExprParser<'a, 'b> {
+    input: &'a str,
+    pos: usize,
+    ctx: &'b EvalContext<'b>,
+}
+
+impl ExprParser<'_, '_> {
+    fn parse_signed_atom(&mut self) -> Result<i64, AssemblerError> {
+        let mut sign = 1_i64;
+        while self.peek_char() == Some('+') || self.peek_char() == Some('-') {
+            if self.next_char() == Some('-') {
+                sign = -sign;
+            }
+        }
+        let atom = self.parse_atom()?;
+        Ok(sign * atom)
     }
 
-    let packed = field_text.parse::<u8>().map_err(|_| {
-        asm_syntax(
-            line_no,
-            &format!("invalid field specification `{field_text}`"),
+    fn parse_atom(&mut self) -> Result<i64, AssemblerError> {
+        match self.peek_char() {
+            Some('*') => {
+                self.pos += 1;
+                Ok(self.ctx.location)
+            }
+            Some(ch) if ch.is_ascii_digit() => {
+                let token =
+                    self.take_while(|c| c.is_ascii_alphanumeric()).to_owned();
+                if token.chars().all(|c| c.is_ascii_digit()) {
+                    token.parse::<i64>().map_err(|_| {
+                        asm_syntax(
+                            self.ctx.line_no,
+                            &format!("invalid number `{token}`"),
+                        )
+                    })
+                } else {
+                    self.resolve_symbol(&token)
+                }
+            }
+            Some(ch) if ch.is_ascii_alphabetic() || ch == '_' => {
+                let token = self
+                    .take_while(|c| c.is_ascii_alphanumeric() || c == '_')
+                    .to_owned();
+                self.resolve_symbol(&token)
+            }
+            _ => Err(asm_syntax(self.ctx.line_no, "invalid expression atom")),
+        }
+    }
+
+    fn resolve_symbol(&self, raw: &str) -> Result<i64, AssemblerError> {
+        let symbol = raw.to_ascii_uppercase();
+        self.ctx.symbols.resolve(
+            &symbol,
+            self.ctx.order,
+            self.ctx.allow_future_standalone,
+            self.ctx.line_no,
         )
-    })?;
+    }
+
+    fn parse_binary_op(&mut self) -> Result<Option<BinaryOp>, AssemblerError> {
+        let Some(ch) = self.peek_char() else {
+            return Ok(None);
+        };
+        match ch {
+            '+' => {
+                self.pos += 1;
+                Ok(Some(BinaryOp::Add))
+            }
+            '-' => {
+                self.pos += 1;
+                Ok(Some(BinaryOp::Sub))
+            }
+            '*' => {
+                self.pos += 1;
+                Ok(Some(BinaryOp::Mul))
+            }
+            ':' => {
+                self.pos += 1;
+                Ok(Some(BinaryOp::Fspec))
+            }
+            '/' => {
+                self.pos += 1;
+                if self.peek_char() == Some('/') {
+                    self.pos += 1;
+                    Ok(Some(BinaryOp::DivLong))
+                } else {
+                    Ok(Some(BinaryOp::Div))
+                }
+            }
+            _ => Err(asm_syntax(
+                self.ctx.line_no,
+                &format!("invalid operator `{ch}` in expression"),
+            )),
+        }
+    }
+
+    fn take_while<F>(&mut self, mut pred: F) -> &str
+    where
+        F: FnMut(char) -> bool,
+    {
+        let start = self.pos;
+        while let Some(ch) = self.peek_char() {
+            if pred(ch) {
+                self.pos += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        &self.input[start..self.pos]
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.input[self.pos..].chars().next()
+    }
+
+    fn next_char(&mut self) -> Option<char> {
+        let ch = self.peek_char()?;
+        self.pos += ch.len_utf8();
+        Some(ch)
+    }
+}
+
+fn split_top_level_commas(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in text.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(text[start..idx].trim());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(text[start..].trim());
+    out
+}
+
+fn split_wexpr_term<'a>(
+    term: &'a str,
+    line_no: usize,
+) -> Result<(&'a str, Option<&'a str>), AssemblerError> {
+    if term.is_empty() {
+        return Err(asm_syntax(line_no, "empty term in w-expression"));
+    }
+    if let Some(open_idx) = term.find('(') {
+        if !term.ends_with(')') {
+            return Err(asm_syntax(line_no, "invalid w-expression term"));
+        }
+        let expr = term[..open_idx].trim();
+        let fexpr = term[open_idx + 1..term.len() - 1].trim();
+        if expr.is_empty() || fexpr.is_empty() {
+            return Err(asm_syntax(line_no, "invalid w-expression term"));
+        }
+        Ok((expr, Some(fexpr)))
+    } else {
+        Ok((term.trim(), None))
+    }
+}
+
+fn i64_to_i16(
+    value: i64,
+    line_no: usize,
+    what: &str,
+) -> Result<i16, AssemblerError> {
+    i16::try_from(value).map_err(|_| {
+        asm_syntax(line_no, &format!("{what} `{value}` out of range"))
+    })
+}
+
+fn i64_to_index(value: i64, line_no: usize) -> Result<u8, AssemblerError> {
+    if !(0..=6).contains(&value) {
+        return Err(asm_syntax(
+            line_no,
+            &format!("index register `{value}` out of range"),
+        ));
+    }
+    Ok(value as u8)
+}
+
+fn i64_to_field(value: i64, line_no: usize) -> Result<u8, AssemblerError> {
+    if !(0..=63).contains(&value) {
+        return Err(asm_syntax(
+            line_no,
+            &format!("field `{value}` out of range"),
+        ));
+    }
+    let packed = value as u8;
     let left = packed / 8;
     let right = packed % 8;
     if left > right || right > 5 {
         return Err(asm_syntax(
             line_no,
-            &format!("invalid field specification `{field_text}`"),
+            &format!("invalid field specification `{value}`"),
         ));
     }
     Ok(packed)
 }
 
-/// Parses one field endpoint (`L` or `R`).
-fn parse_field_component(
-    value: &str,
+fn i64_to_u6(
+    value: i64,
     line_no: usize,
+    what: &str,
 ) -> Result<u8, AssemblerError> {
-    let parsed = value.parse::<u8>().map_err(|_| {
-        asm_syntax(line_no, &format!("invalid field component `{value}`"))
-    })?;
-    if parsed > 5 {
+    if !(0..=63).contains(&value) {
         return Err(asm_syntax(
             line_no,
-            &format!("field component `{parsed}` out of range"),
+            &format!("{what} `{value}` out of range"),
         ));
     }
-    Ok(parsed)
+    Ok(value as u8)
 }
 
-/// Removes trailing comments introduced by `#` or `;`.
-fn strip_comments(line: &str) -> &str {
+fn take_token(input: &str) -> Option<(&str, &str)> {
+    let trimmed = input.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let start_offset = input.len() - trimmed.len();
+    let end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let token = &trimmed[..end];
+    let rest_idx = start_offset + end;
+    Some((token, &input[rest_idx..]))
+}
+
+fn parse_directive(token: &str) -> Option<Directive> {
+    match token {
+        "ORIG" => Some(Directive::Orig),
+        "EQU" => Some(Directive::Equ),
+        "CON" => Some(Directive::Con),
+        "ALF" => Some(Directive::Alf),
+        "END" => Some(Directive::End),
+        _ => None,
+    }
+}
+
+fn is_opcode_or_directive(token: &str) -> bool {
+    parse_directive(token).is_some() || is_opcode(token)
+}
+
+fn is_opcode(token: &str) -> bool {
+    matches!(
+        token,
+        "NOP"
+            | "ADD"
+            | "SUB"
+            | "MUL"
+            | "DIV"
+            | "NUM"
+            | "CHAR"
+            | "HLT"
+            | "SLA"
+            | "SRA"
+            | "SLAX"
+            | "SRAX"
+            | "SLC"
+            | "SRC"
+            | "SLB"
+            | "SRB"
+            | "MOVE"
+            | "LDA"
+            | "LD1"
+            | "LD2"
+            | "LD3"
+            | "LD4"
+            | "LD5"
+            | "LD6"
+            | "LDX"
+            | "LDAN"
+            | "LD1N"
+            | "LD2N"
+            | "LD3N"
+            | "LD4N"
+            | "LD5N"
+            | "LD6N"
+            | "LDXN"
+            | "STA"
+            | "ST1"
+            | "ST2"
+            | "ST3"
+            | "ST4"
+            | "ST5"
+            | "ST6"
+            | "STX"
+            | "STJ"
+            | "STZ"
+            | "JBUS"
+            | "IOC"
+            | "IN"
+            | "OUT"
+            | "JRED"
+            | "JMP"
+            | "JSJ"
+            | "JOV"
+            | "JNOV"
+            | "JL"
+            | "JE"
+            | "JG"
+            | "JGE"
+            | "JNE"
+            | "JLE"
+            | "JAN"
+            | "JAZ"
+            | "JAP"
+            | "JANN"
+            | "JANZ"
+            | "JANP"
+            | "JAE"
+            | "JAO"
+            | "J1N"
+            | "J1Z"
+            | "J1P"
+            | "J1NN"
+            | "J1NZ"
+            | "J1NP"
+            | "J2N"
+            | "J2Z"
+            | "J2P"
+            | "J2NN"
+            | "J2NZ"
+            | "J2NP"
+            | "J3N"
+            | "J3Z"
+            | "J3P"
+            | "J3NN"
+            | "J3NZ"
+            | "J3NP"
+            | "J4N"
+            | "J4Z"
+            | "J4P"
+            | "J4NN"
+            | "J4NZ"
+            | "J4NP"
+            | "J5N"
+            | "J5Z"
+            | "J5P"
+            | "J5NN"
+            | "J5NZ"
+            | "J5NP"
+            | "J6N"
+            | "J6Z"
+            | "J6P"
+            | "J6NN"
+            | "J6NZ"
+            | "J6NP"
+            | "JXN"
+            | "JXZ"
+            | "JXP"
+            | "JXNN"
+            | "JXNZ"
+            | "JXNP"
+            | "JXE"
+            | "JXO"
+            | "INCA"
+            | "DECA"
+            | "ENTA"
+            | "ENNA"
+            | "INC1"
+            | "DEC1"
+            | "ENT1"
+            | "ENN1"
+            | "INC2"
+            | "DEC2"
+            | "ENT2"
+            | "ENN2"
+            | "INC3"
+            | "DEC3"
+            | "ENT3"
+            | "ENN3"
+            | "INC4"
+            | "DEC4"
+            | "ENT4"
+            | "ENN4"
+            | "INC5"
+            | "DEC5"
+            | "ENT5"
+            | "ENN5"
+            | "INC6"
+            | "DEC6"
+            | "ENT6"
+            | "ENN6"
+            | "INCX"
+            | "DECX"
+            | "ENTX"
+            | "ENNX"
+            | "CMPA"
+            | "CMP1"
+            | "CMP2"
+            | "CMP3"
+            | "CMP4"
+            | "CMP5"
+            | "CMP6"
+            | "CMPX"
+    )
+}
+
+fn strip_hash_and_semicolon_comments(line: &str) -> &str {
     let hash_idx = line.find('#');
     let semi_idx = line.find(';');
     match (hash_idx, semi_idx) {
@@ -1141,7 +2691,41 @@ fn strip_comments(line: &str) -> &str {
     }
 }
 
-/// Constructs a line-numbered assembler syntax error.
+fn local_h_digit(label: &str) -> Option<u8> {
+    let bytes = label.as_bytes();
+    if bytes.len() == 2 && (b'1'..=b'9').contains(&bytes[0]) && bytes[1] == b'H'
+    {
+        Some(bytes[0] - b'0')
+    } else {
+        None
+    }
+}
+
+fn local_symbol_ref(symbol: &str) -> Option<(u8, char)> {
+    let bytes = symbol.as_bytes();
+    if bytes.len() == 2 && (b'1'..=b'9').contains(&bytes[0]) {
+        let flavor = bytes[1] as char;
+        if matches!(flavor, 'B' | 'F' | 'H') {
+            return Some((bytes[0] - b'0', flavor));
+        }
+    }
+    None
+}
+
+fn is_literal_constant(text: &str) -> bool {
+    text.starts_with('=') && text.ends_with('=') && text.len() >= 2
+}
+
+fn is_standalone_symbol_expr(text: &str) -> bool {
+    let mut s = text.trim();
+    if s.starts_with('+') || s.starts_with('-') {
+        s = &s[1..];
+    }
+    !s.is_empty()
+        && s.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        && !s.chars().all(|ch| ch.is_ascii_digit())
+}
+
 fn asm_syntax(line: usize, message: &str) -> AssemblerError {
     AssemblerError::Syntax {
         line,
@@ -1155,7 +2739,7 @@ mod tests {
 
     #[test]
     fn assembles_simple_program_and_runs() {
-        let source = "LDA 2000\nADD 2001\nSTA 2002\nHLT\n";
+        let source = "LDA 2000\nADD 2001\nSTA 2002\nHLT\nEND 0\n";
         let mut machine = assemble(source).unwrap();
         machine.set_memory_word(2000, 2).unwrap();
         machine.set_memory_word(2001, 3).unwrap();
@@ -1169,14 +2753,14 @@ mod tests {
 
     #[test]
     fn supports_index_and_field_operand_parts() {
-        let source = "LDA 100,2(1:3)\nHLT\n";
+        let source = "LDA 100,2(1:3)\nHLT\nEND 0\n";
         let machine = assemble(source).unwrap();
         assert!(machine.memory_word(0).unwrap() > 0);
     }
 
     #[test]
     fn rejects_unknown_mnemonics() {
-        let result = assemble("NOTREAL 0\n");
+        let result = assemble("NOTREAL 0\nEND 0\n");
         assert!(matches!(
             result,
             Err(AssemblerError::Syntax { line: 1, .. })
@@ -1185,7 +2769,7 @@ mod tests {
 
     #[test]
     fn rejects_fixed_field_override() {
-        let result = assemble("JMP 10(0:1)\n");
+        let result = assemble("JMP 10(0:1)\nEND 0\n");
         assert!(matches!(
             result,
             Err(AssemblerError::Syntax { line: 1, .. })
@@ -1194,9 +2778,83 @@ mod tests {
 
     #[test]
     fn assembles_io_unit_numbers() {
-        let source = "IN 2000(16)\nOUT 2000(18)\nHLT\n";
+        let source = "IN 2000(16)\nOUT 2000(18)\nHLT\nEND 0\n";
         let machine = assemble(source).unwrap();
         assert!(machine.memory_word(0).unwrap() > 0);
         assert!(machine.memory_word(1).unwrap() > 0);
+    }
+
+    #[test]
+    fn supports_directives_and_labels() {
+        let source = "START EQU 2000\nORIG START\nL1 LDA VALUE\nHLT\nVALUE CON 7\nEND L1\n";
+        let mut machine = assemble(source).unwrap();
+        while !machine.is_halted() {
+            machine.advance_state().unwrap();
+        }
+        assert_eq!(machine.register_a(), 7);
+    }
+
+    #[test]
+    fn supports_alf_and_literal_constants() {
+        let source = "ORIG 3000\nMSG ALF \"HELLO\"\nLDA =15=\nHLT\nEND 3001\n";
+        let mut machine = assemble(source).unwrap();
+        machine.advance_state().unwrap();
+        assert_eq!(machine.register_a(), 15);
+        assert!(machine.memory_word(3000).unwrap() > 0);
+    }
+
+    #[test]
+    fn supports_local_symbols() {
+        let source = "ORIG 2000\n1H NOP\nJMP 1B\nJMP 3F\n3H HLT\nEND 2001\n";
+        let machine = assemble(source).unwrap();
+        assert!(machine.memory_word(2001).unwrap() > 0);
+    }
+
+    #[test]
+    fn rejects_missing_end() {
+        let result = assemble("HLT\n");
+        assert!(matches!(
+            result,
+            Err(AssemblerError::Syntax { message, .. }) if message.contains("END")
+        ));
+    }
+
+    #[test]
+    fn assembles_complicated_feature_rich_program() {
+        let source = r#"
+* complete MIXAL feature exercise
+A EQU 14/3
+B EQU 1:2
+C EQU 1//64
+START EQU 1200
+ORIG START
+ENTA 0 ; initialize accumulator
+1H INCA 1
+CMPA =3=
+JL 1B
+STA VALUE # save loop result
+JMP 2F
+ORIG *+1
+VALUE CON -A(0:0),B(1:2),C(3:5)
+TEXT ALF "HELLO"
+2H LDA VALUE,1-1(0:5)
+ADD =1=
+STA VALUE
+LDA FUTURE
+JMP DONE
+FUTURE CON 10
+DONE HLT
+END START
+"#;
+
+        let mut machine = assemble(source).unwrap();
+        while !machine.is_halted() {
+            machine.advance_state().unwrap();
+        }
+
+        assert_eq!(machine.register_a(), 10);
+        assert_eq!(machine.memory_word(1207).unwrap(), 4);
+        assert_eq!(machine.memory_word(1216).unwrap(), 3);
+        assert_eq!(machine.memory_word(1217).unwrap(), 1);
     }
 }

@@ -20,52 +20,85 @@
 	const DEFAULT_BLOCK_SIZE = 1;
 	const LINE_WRAP = 100;
 
-	const primesExample = `IN 2000(16)      ; read 1 word of paper tape text (e.g. 00010)
-ENTA 0
-LDX 2000
-NUM             ; parse decimal text from rX into rA
-STA 2010        ; target count N
-STZ 2021        ; spacer word (5 spaces)
+	const primesExample = `* Prime printer with double output buffers.
+* Reads one 5-char decimal word from paper tape (unit 16),
+* prints that many primes to the line printer (unit 18).
 
-ENT1 0          ; emitted prime count
-ENTA 2
-STA 2011        ; current candidate
+PTAPE   EQU 16
+PRINTER EQU 18
+START   EQU 3000
 
-CMP1 2010       ; while count < N
-JGE 36
+        ORIG START
+        IN INWORD(PTAPE)
+        ENTA 0
+        LDX INWORD
+        NUM
+        STA TARGETN
 
-ENTA 2
-STA 2012        ; divisor = 2
+        ENT1 0
+        ENTA 2
+        STA CAND
+        ENTA 1
+        STA WHICH
 
-LDA 2012        ; divisibility loop
-MUL 2012        ; divisor^2 in rX for small values
-CMPX 2011
-JG 25           ; if divisor^2 > candidate, candidate is prime
+LOOP    CMP1 TARGETN
+        JGE DONE
 
-ENTA 0
-LDX 2011
-DIV 2012
-JXZ 32          ; remainder == 0 => not prime
+        ENTA 2
+        STA DIVISOR
+1H      LDA DIVISOR
+        MUL DIVISOR
+        CMPX CAND
+        JG 2F
 
-LDA 2012
-INCA 1
-STA 2012
-JMP 13
+        ENTA 0
+        LDX CAND
+        DIV DIVISOR
+        JXZ 3F
 
-LDA 2011        ; prime: render and output as 5 MIX chars
-CHAR
-STX 2020
-OUT 2020(18)
-OUT 2021(18)
-INC1 1
-JMP 32
+        LDA DIVISOR
+        INCA 1
+        STA DIVISOR
+        JMP 1B
 
-LDA 2011        ; next candidate
-INCA 1
-STA 2011
-JMP 9
+2H      LDA CAND
+        CHAR
+        LDA WHICH
+        CMPA =1=
+        JNE 4F
 
-HLT`;
+        STX BUF1
+        OUT BUF1(PRINTER)
+        ENTA 2
+        STA WHICH
+        JMP 5F
+
+4H      STX BUF2
+        OUT BUF2(PRINTER)
+        ENTA 1
+        STA WHICH
+
+5H      OUT SPACE(PRINTER)
+        INC1 1
+
+3H      LDA CAND
+        INCA 1
+        STA CAND
+        JMP LOOP
+
+DONE    HLT
+
+        ORIG *+2
+INWORD  CON 0
+TARGETN CON 0
+CAND    CON 0
+DIVISOR CON 0
+WHICH   CON 1
+SPACE   ALF "     "
+BUF1    CON 0
+BUF2    CON 0
+
+        END START`;
 
 	let assembly = $state(primesExample);
 	let paperTapeInput = $state('00017');
