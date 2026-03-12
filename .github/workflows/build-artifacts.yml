@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -38,7 +38,9 @@ jobs:
         run: bun run build
 
       - name: Package frontend artifact
-        run: tar -czf "misch-frontend-${GITHUB_SHA}.tar.gz" -C build .
+        run: |
+          tar -czf "misch-frontend-${GITHUB_SHA}.tar.gz" -C build .
+          cp "misch-frontend-${GITHUB_SHA}.tar.gz" misch-frontend-latest.tar.gz
 
       - name: Upload frontend artifact
         uses: actions/upload-artifact@v4
@@ -47,6 +49,19 @@ jobs:
           path: misch-frontend/misch-frontend-${{ github.sha }}.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish frontend tarball as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: frontend-latest
+          name: Frontend Build (latest)
+          body: |
+            Static frontend build from commit `${{ github.sha }}`.
+          prerelease: true
+          make_latest: false
+          files: misch-frontend/misch-frontend-latest.tar.gz
+          fail_on_unmatched_files: true
+          overwrite_files: true
 
   build-api-image:
     runs-on: ubuntu-latest
