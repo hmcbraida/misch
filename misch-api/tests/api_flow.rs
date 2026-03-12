@@ -1,6 +1,6 @@
 use rocket::http::Status;
 use rocket::local::blocking::Client;
-use rocket::serde::json::serde_json::{Value, json};
+use rocket::serde::json::serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 
@@ -107,4 +107,49 @@ fn primes_program_runs_and_emits_expected_count() {
     assert_eq!(primes.len(), 17);
     assert_eq!(primes.first().copied(), Some("00002"));
     assert_eq!(primes.last().copied(), Some("00059"));
+}
+
+#[test]
+fn vigenere_program_encrypts_text_from_paper_tape() {
+    let client =
+        Client::tracked(misch_api::build_rocket()).expect("rocket client");
+    let assembly = fixture("examples/vigenere.mixal");
+    let session_id = create_session_id(&client, &assembly);
+
+    let response = client
+        .post(format!("/api/v1/sessions/{session_id}/io/input/text"))
+        .json(&json!({
+            "unit": 16,
+            "text": "LEMON     ATTACK AT DAWN. 123"
+        }))
+        .dispatch();
+    assert_eq!(response.status(), Status::Ok);
+
+    let response = client
+        .post(format!("/api/v1/sessions/{session_id}/run"))
+        .dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let run_body: Value = response.into_json().expect("run response JSON");
+    assert_eq!(run_body.get("halted").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        run_body.get("reached_step_limit").and_then(Value::as_bool),
+        Some(false)
+    );
+
+    let response = client
+        .get(format!(
+            "/api/v1/sessions/{session_id}/io/output/text?unit=18"
+        ))
+        .dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let output_body: Value =
+        response.into_json().expect("output response JSON");
+    let text = output_body
+        .get("units")
+        .and_then(Value::as_object)
+        .and_then(|units| units.get("18"))
+        .and_then(Value::as_str)
+        .expect("unit 18 text output");
+
+    assert_eq!(text.trim_end(), "LXFOPV EF RNHR. 123");
 }

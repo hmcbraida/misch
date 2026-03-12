@@ -1,0 +1,188 @@
+* Vigenere cipher from paper tape to line printer.
+* Input format on unit 16:
+*   <PASSWORD><spaces-to-next-5-char-block><MESSAGE>
+* Password is assumed < 10 chars and has no spaces.
+* Message is assumed < 500 chars.
+*
+* Only A-Z are encrypted; other MIX characters are emitted unchanged.
+
+PTAPE   EQU 16
+PRINTER EQU 18
+START   EQU 3000
+
+        ORIG START
+        ENT2 0
+        ENT3 0
+        ENT4 0
+        ENTA 0
+        STA MODE
+        STZ OUTWORD
+
+WORDLP  IN INWORD(PTAPE)
+
+        LDA MODE
+        CMPA =2=
+        JNE PROCWD
+        LDA INWORD
+        CMPA ZERO
+        JE DONE
+
+PROCWD  ENT1 4
+
+CHLP    LDA INWORD
+        SRA 0,1
+        STZ CUR
+        STA CUR(5:5)
+
+        LDA MODE
+        CMPA =0=
+        JE MODE0
+        CMPA =1=
+        JE MODE1
+        JMP MODE2
+
+MODE0   LDA CUR
+        CMPA SPACE
+        JE ENDKEY
+
+        CMPA =1=
+        JL KEYNON
+        CMPA =9=
+        JLE KEYR1
+        CMPA =11=
+        JL KEYNON
+        CMPA =19=
+        JLE KEYR2
+        CMPA =22=
+        JL KEYNON
+        CMPA =29=
+        JLE KEYR3
+        JMP KEYNON
+
+KEYR1   SUB =1=
+        JMP KEYOK
+KEYR2   SUB =2=
+        JMP KEYOK
+KEYR3   SUB =4=
+        JMP KEYOK
+KEYNON  ENTA 0
+KEYOK   STA KEY0,3
+        INC3 1
+        JMP NEXTCH
+
+ENDKEY  ENTA 1
+        STA MODE
+        ST3 KEYLEN
+        JMP NEXTCH
+
+MODE1   LDA CUR
+        CMPA SPACE
+        JE NEXTCH
+        ENTA 2
+        STA MODE
+
+MODE2   LDA CUR
+        CMPA =1=
+        JL APPRAW
+        CMPA =9=
+        JLE ENCR1
+        CMPA =11=
+        JL APPRAW
+        CMPA =19=
+        JLE ENCR2
+        CMPA =22=
+        JL APPRAW
+        CMPA =29=
+        JLE ENCR3
+        JMP APPRAW
+
+ENCR1   SUB =1=
+        JMP HAVEI
+ENCR2   SUB =2=
+        JMP HAVEI
+ENCR3   SUB =4=
+
+HAVEI   STA IDX
+        LDA KEY0,2
+        STA SHIFT
+        LDA IDX
+        ADD SHIFT
+
+MOD26   CMPA =26=
+        JL MAPBK
+        SUB =26=
+        JMP MOD26
+
+MAPBK   CMPA =9=
+        JL BACK1
+        CMPA =18=
+        JL BACK2
+        ADD =4=
+        JMP ADVKEY
+BACK1   ADD =1=
+        JMP ADVKEY
+BACK2   ADD =2=
+
+ADVKEY  INC2 1
+        CMP2 KEYLEN
+        JL APPCHR
+        ENT2 0
+        JMP APPCHR
+
+APPRAW  LDA CUR
+
+APPCHR  STA ENC
+        LDA OUTWORD
+        SLA 1
+        STA OUTWORD
+        LDA ENC
+        STA OUTWORD(5:5)
+        INC4 1
+        CMP4 =5=
+        JNE NEXTCH
+        OUT OUTWORD(PRINTER)
+        STZ OUTWORD
+        ENT4 0
+
+NEXTCH  DEC1 1
+        J1NN CHLP
+        JMP WORDLP
+
+DONE    CMP4 =0=
+        JE STOP
+
+PADLP   CMP4 =5=
+        JE FLUSH
+        LDA OUTWORD
+        SLA 1
+        STA OUTWORD
+        INC4 1
+        JMP PADLP
+
+FLUSH   OUT OUTWORD(PRINTER)
+
+STOP    HLT
+
+        ORIG *+2
+INWORD  CON 0
+OUTWORD CON 0
+CUR     CON 0
+MODE    CON 0
+KEYLEN  CON 0
+IDX     CON 0
+SHIFT   CON 0
+ENC     CON 0
+SPACE   CON 0
+ZERO    CON 0
+KEY0    CON 0
+KEY1    CON 0
+KEY2    CON 0
+KEY3    CON 0
+KEY4    CON 0
+KEY5    CON 0
+KEY6    CON 0
+KEY7    CON 0
+KEY8    CON 0
+KEY9    CON 0
+
+        END START
