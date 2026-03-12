@@ -2,101 +2,163 @@ use crate::error::MixError;
 use crate::word::{MixWord, Sign};
 
 #[derive(Debug, Clone, Copy)]
+/// Decoded address part (`AA` + `I`) of a MIX instruction.
 pub(crate) struct AddressSpec {
     pub(crate) address: i16,
     pub(crate) index: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Decoded memory operand (`AA`, `I`, `F`) of a MIX instruction.
 pub(crate) struct OperandSpec {
     pub(crate) addr: AddressSpec,
     pub(crate) field: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Destination register family for `LD*` instructions.
 pub(crate) enum LoadTarget {
+    /// Register `A`.
     A,
+    /// Register `X`.
     X,
+    /// Index register `I1..I6`.
     I(u8),
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Source register family for `ST*` instructions.
 pub(crate) enum StoreSource {
+    /// Register `A`.
     A,
+    /// Register `X`.
     X,
+    /// Index register `I1..I6`.
     I(u8),
+    /// Jump register `J`.
     J,
+    /// Constant zero word (`+0`).
     Zero,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Shift mode encoded in opcode `6`.
 pub(crate) enum ShiftMode {
+    /// Shift register `A` left by bytes.
     Sla,
+    /// Shift register `A` right by bytes.
     Sra,
+    /// Shift the combined `A:X` pair left by bytes.
     Slax,
+    /// Shift the combined `A:X` pair right by bytes.
     Srax,
+    /// Circular left shift over `A:X` bytes.
     Slc,
+    /// Circular right shift over `A:X` bytes.
     Src,
+    /// Bit-level shift left over packed `A:X` bits.
     Slb,
+    /// Bit-level shift right over packed `A:X` bits.
     Srb,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Branch condition family for opcode `39` jump instructions.
 pub(crate) enum JumpCondition {
+    /// Unconditional jump and store return in `J`.
     Jmp,
+    /// Unconditional jump without storing return address.
     Jsj,
+    /// Jump on overflow (and clear overflow flag).
     Jov,
+    /// Jump on no overflow (and clear overflow flag).
     Jnov,
+    /// Jump if comparison is less.
     Jl,
+    /// Jump if comparison is equal.
     Je,
+    /// Jump if comparison is greater.
     Jg,
+    /// Jump if comparison is greater-or-equal.
     Jge,
+    /// Jump if comparison is non-equal.
     Jne,
+    /// Jump if comparison is less-or-equal.
     Jle,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Register family used by `JA*`, `JX*`, and `Ji*` instructions.
 pub(crate) enum RegisterJumpTarget {
+    /// Register `A`.
     A,
+    /// Register `X`.
     X,
+    /// Index register `I1..I6`.
     I(u8),
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Predicate used by register jump instructions.
 pub(crate) enum RegisterJumpCondition {
+    /// Value is negative.
     Negative,
+    /// Value is exactly zero.
     Zero,
+    /// Value is positive.
     Positive,
+    /// Value is non-negative.
     NonNegative,
+    /// Value is non-zero.
     NonZero,
+    /// Value is non-positive.
     NonPositive,
+    /// Value is even (word targets only).
     Even,
+    /// Value is odd (word targets only).
     Odd,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Register family used by `ENT*`/`ENN*`/`INC*`/`DEC*` instructions.
 pub(crate) enum AddrTransferTarget {
+    /// Register `A`.
     A,
+    /// Register `X`.
     X,
+    /// Index register `I1..I6`.
     I(u8),
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Address transfer operation mode.
 pub(crate) enum AddrTransferMode {
+    /// Increment target by effective address.
     Inc,
+    /// Decrement target by effective address.
     Dec,
+    /// Enter effective address.
     Ent,
+    /// Enter negated effective address.
     Enn,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Register family used by `CMP*` instructions.
 pub(crate) enum CompareTarget {
+    /// Register `A`.
     A,
+    /// Register `X`.
     X,
+    /// Index register `I1..I6`.
     I(u8),
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Fully decoded MIX instruction.
+///
+/// This representation is used internally by the emulator and assembler to
+/// separate instruction semantics from packed machine-word encoding.
 pub(crate) enum Instruction {
     Nop,
     Add(OperandSpec),
@@ -164,6 +226,10 @@ pub(crate) enum Instruction {
 }
 
 impl Instruction {
+    /// Decodes a packed instruction `word` into a semantic [`Instruction`].
+    ///
+    /// Validates byte ranges against `byte_size` and checks opcode/field
+    /// combinations for legality.
     pub(crate) fn decode(
         word: MixWord,
         byte_size: u16,
@@ -333,6 +399,7 @@ impl Instruction {
         }
     }
 
+    /// Encodes this semantic instruction into a packed MIX machine word.
     pub(crate) fn encode(&self, byte_size: u16) -> MixWord {
         let (address, index, field, opcode) = match *self {
             Instruction::Nop => (0, 0, 0, 0),
@@ -490,6 +557,7 @@ impl Instruction {
     }
 }
 
+/// Decodes register-jump field selector to a predicate.
 fn decode_register_jump_cond(
     field: u8,
 ) -> Result<RegisterJumpCondition, MixError> {
@@ -506,6 +574,7 @@ fn decode_register_jump_cond(
     }
 }
 
+/// Decodes address-transfer field selector to transfer mode.
 fn decode_addr_transfer_mode(
     opcode: u8,
     field: u8,

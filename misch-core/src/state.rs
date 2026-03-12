@@ -10,7 +10,27 @@ use crate::word::{Comparison, MixHalfWord, MixWord, Sign};
 const MEMORY_SIZE: usize = 4000;
 const DEVICE_COUNT: usize = 21;
 
-/// MIX machine state and execution engine.
+/// Complete MIX machine state plus a single-step execution engine.
+///
+/// `MixState` owns memory, registers, condition flags, I/O device bindings,
+/// and the instruction counter. Typical usage is:
+///
+/// 1. Build a machine with [`MixState::blank`] or via [`crate::assemble`].
+/// 2. Load memory and optionally attach device callbacks.
+/// 3. Repeatedly call [`MixState::advance_state`] until [`MixState::is_halted`]
+///    returns `true`.
+///
+/// # Examples
+///
+/// ```
+/// use misch_core::assemble;
+///
+/// let mut machine = assemble("HLT\n").unwrap();
+/// while !machine.is_halted() {
+///     machine.advance_state().unwrap();
+/// }
+/// assert!(machine.is_halted());
+/// ```
 pub struct MixState {
     byte_size: u16,
     memory: [MixWord; MEMORY_SIZE],
@@ -26,9 +46,12 @@ pub struct MixState {
 }
 
 impl MixState {
-    /// Creates a "blank" MIX machine with the requested byte size.
+    /// Creates a blank MIX machine with the requested `byte_size`.
     ///
-    /// The resulting machine will have blank memory and registers.
+    /// All registers and memory cells are initialized to `+0`, the instruction
+    /// counter starts at `0`, and no I/O devices are attached.
+    ///
+    /// `byte_size` must be in `64..=100`.
     pub fn blank(byte_size: u16) -> Result<Self, MixError> {
         if !(64..=100).contains(&byte_size) {
             return Err(MixError::InvalidByteSize(byte_size));
@@ -48,7 +71,17 @@ impl MixState {
         })
     }
 
-    /// Attaches an input callback at a MIX unit.
+    /// Attaches an input callback to a MIX device unit.
+    ///
+    /// The callback is invoked whenever an `IN` instruction reads from `unit`.
+    ///
+    /// - `unit`: device number in the MIX range `0..=20`.
+    /// - `block_size`: required number of words returned per read.
+    /// - `reader`: callback producing signed words for one device read.
+    ///
+    /// The callback may return fewer or more machine words as `i64`; values are
+    /// converted to MIX words using this machine's byte size. During execution,
+    /// `IN` enforces that the produced block matches `block_size`.
     pub fn attach_input_callback<F>(
         &mut self,
         unit: u8,
@@ -73,7 +106,16 @@ impl MixState {
         Ok(())
     }
 
-    /// Attaches an output callback at a MIX unit.
+    /// Attaches an output callback to a MIX device unit.
+    ///
+    /// The callback is invoked whenever an `OUT` instruction writes to `unit`.
+    ///
+    /// - `unit`: device number in the MIX range `0..=20`.
+    /// - `block_size`: number of words emitted per write.
+    /// - `writer`: callback receiving one output block as signed integers.
+    ///
+    /// MIX words are converted to signed `i64` values before being passed to the
+    /// callback.
     pub fn attach_output_callback<F>(
         &mut self,
         unit: u8,
@@ -96,7 +138,10 @@ impl MixState {
         Ok(())
     }
 
-    /// Writes one memory cell from a signed integer value.
+    /// Stores one signed value into memory.
+    ///
+    /// - `address`: absolute memory address in `0..4000`.
+    /// - `value`: signed integer encoded into one MIX word.
     pub fn set_memory_word(
         &mut self,
         address: usize,
@@ -122,7 +167,9 @@ impl MixState {
         Ok(())
     }
 
-    /// Reads one memory cell as a signed integer value.
+    /// Reads one memory cell as a signed integer.
+    ///
+    /// `address` must be in `0..4000`.
     pub fn memory_word(&self, address: usize) -> Result<i64, MixError> {
         if address >= MEMORY_SIZE {
             return Err(MixError::AddressOutOfRange(address as i32));
@@ -130,7 +177,14 @@ impl MixState {
         Ok(self.memory[address].as_signed_i64(self.byte_size))
     }
 
-    /// Encodes and stores a machine instruction word.
+    /// Encodes and stores a machine instruction word at `address`.
+    ///
+    /// Parameters map directly to MIX instruction fields:
+    ///
+    /// - `op_address`: signed address field (`AA`).
+    /// - `index`: index register specifier (`I`, where `0` means no indexing).
+    /// - `field`: field specification (`F`) as packed `8 * L + R`.
+    /// - `opcode`: operation code (`C`).
     pub fn set_instruction(
         &mut self,
         address: usize,
@@ -166,7 +220,11 @@ impl MixState {
         Ok(())
     }
 
-    /// Execute the instruction at `ic`, then update machine state.
+    /// Executes the instruction at the current instruction counter.
+    ///
+    /// The instruction counter is incremented before instruction execution,
+    /// matching MIX control-flow semantics (so jump instructions can replace it).
+    /// Calling this on a halted machine is a no-op.
     pub fn advance_state(&mut self) -> Result<(), MixError> {
         if self.halted {
             return Ok(());
@@ -179,22 +237,22 @@ impl MixState {
         self.execute(instruction)
     }
 
-    /// Returns true iff the machine has halted.
+    /// Returns whether `HLT` has been executed.
     pub fn is_halted(&self) -> bool {
         self.halted
     }
 
-    /// Returns the current instruction counter.
+    /// Returns the current instruction counter (`IC`).
     pub fn instruction_counter(&self) -> u16 {
         self.ic
     }
 
-    /// Returns true if the overflow flag is set.
+    /// Returns the overflow toggle state.
     pub fn overflow_flag(&self) -> bool {
         self.overflow
     }
 
-    /// Returns the comparison indicator as `less`, `equal`, or `greater`.
+    /// Returns the comparison indicator as `"less"`, `"equal"`, or `"greater"`.
     pub fn comparison_indicator(&self) -> &'static str {
         match self.comparison {
             Comparison::Less => "less",
@@ -203,22 +261,24 @@ impl MixState {
         }
     }
 
-    /// Returns register A as a signed integer.
+    /// Returns register `A` as a signed integer.
     pub fn register_a(&self) -> i64 {
         self.r_a.as_signed_i64(self.byte_size)
     }
 
-    /// Returns register X as a signed integer.
+    /// Returns register `X` as a signed integer.
     pub fn register_x(&self) -> i64 {
         self.r_x.as_signed_i64(self.byte_size)
     }
 
-    /// Returns the jump register J as a signed integer.
+    /// Returns jump register `J` as a signed integer.
     pub fn register_j(&self) -> i32 {
         self.r_j.as_signed_i32(self.byte_size)
     }
 
-    /// Returns index register I1..I6 as a signed integer.
+    /// Returns index register `I1..I6` as a signed integer.
+    ///
+    /// `index` is 1-based and must be in `1..=6`.
     pub fn index_register(&self, index: u8) -> Result<i32, MixError> {
         if !(1..=6).contains(&index) {
             return Err(MixError::InvalidIndexRegister(index));
@@ -226,7 +286,12 @@ impl MixState {
         Ok(self.r_i[usize::from(index - 1)].as_signed_i32(self.byte_size))
     }
 
-    /// Returns a signed memory slice beginning at `start`.
+    /// Returns a signed memory window.
+    ///
+    /// - `start`: first address in the window.
+    /// - `length`: number of consecutive words to read.
+    ///
+    /// Returns an error if the window is outside `0..4000`.
     pub fn memory_window(
         &self,
         start: usize,
@@ -247,6 +312,7 @@ impl MixState {
             .collect())
     }
 
+    /// Dispatches a decoded instruction to its concrete executor.
     fn execute(&mut self, instruction: Instruction) -> Result<(), MixError> {
         match instruction {
             Instruction::Nop => Ok(()),
@@ -285,6 +351,7 @@ impl MixState {
         }
     }
 
+    /// Returns `byte_size^5`, the word magnitude modulus.
     fn word_modulus(&self) -> i64 {
         let mut out = 1_i64;
         for _ in 0..5 {
@@ -293,10 +360,12 @@ impl MixState {
         out
     }
 
+    /// Returns `byte_size^2`, the half-word magnitude modulus.
     fn half_modulus(&self) -> i32 {
         (i64::from(self.byte_size) * i64::from(self.byte_size)) as i32
     }
 
+    /// Validates that a device unit is in the supported `0..=20` range.
     fn ensure_unit(&self, unit: u8) -> Result<(), MixError> {
         if usize::from(unit) >= DEVICE_COUNT {
             return Err(MixError::DeviceUnitOutOfRange(unit));
@@ -304,6 +373,7 @@ impl MixState {
         Ok(())
     }
 
+    /// Computes effective address by applying optional index register offset.
     fn effective_address(&self, addr: AddressSpec) -> Result<i32, MixError> {
         if addr.index > 6 {
             return Err(MixError::InvalidIndexRegister(addr.index));
@@ -316,6 +386,7 @@ impl MixState {
         Ok(i32::from(addr.address) + idx_val)
     }
 
+    /// Validates and converts a signed address into a memory index.
     fn checked_memory_address(&self, address: i32) -> Result<usize, MixError> {
         if !(0..MEMORY_SIZE as i32).contains(&address) {
             return Err(MixError::AddressOutOfRange(address));
@@ -323,12 +394,14 @@ impl MixState {
         Ok(address as usize)
     }
 
+    /// Loads and field-slices a word from memory using an operand spec.
     fn word_from_m(&self, op: OperandSpec) -> Result<MixWord, MixError> {
         let m = self.effective_address(op.addr)?;
         let addr = self.checked_memory_address(m)?;
         self.memory[addr].slice(op.field)
     }
 
+    /// Updates instruction counter, optionally storing return address in `J`.
     fn jump_to(
         &mut self,
         destination: i32,
@@ -344,6 +417,7 @@ impl MixState {
         Ok(())
     }
 
+    /// Adds signed delta to a full word with MIX overflow/wrap behavior.
     fn add_to_word_with_overflow(
         &mut self,
         current: MixWord,
@@ -367,6 +441,7 @@ impl MixState {
         MixWord::from_signed(sum, self.byte_size)
     }
 
+    /// Adds signed delta to a half-word with MIX overflow/wrap behavior.
     fn add_to_half_with_overflow(
         &mut self,
         current: MixHalfWord,
@@ -844,6 +919,7 @@ impl MixState {
         Ok(())
     }
 
+    /// Evaluates register-jump predicate for full-word registers (`A`/`X`).
     fn jump_predicate_word(
         value: MixWord,
         cond: RegisterJumpCondition,
@@ -865,6 +941,7 @@ impl MixState {
         }
     }
 
+    /// Evaluates register-jump predicate for half-word index registers.
     fn jump_predicate_half(
         value: MixHalfWord,
         cond: RegisterJumpCondition,
@@ -973,6 +1050,7 @@ impl MixState {
         Ok(())
     }
 
+    /// Compares two words as signed values.
     fn cmp_word(lhs: MixWord, rhs: MixWord, byte_size: u16) -> Comparison {
         let l = lhs.as_signed_i64(byte_size);
         let r = rhs.as_signed_i64(byte_size);
@@ -985,6 +1063,7 @@ impl MixState {
         }
     }
 
+    /// Compares two half-words as signed values.
     fn cmp_half(
         lhs: MixHalfWord,
         rhs: MixHalfWord,

@@ -9,6 +9,7 @@ use std::fmt;
 
 const DEFAULT_BYTE_SIZE: u16 = 64;
 
+/// Parsed operand components prior to instruction construction.
 struct ParsedOperand {
     address: i16,
     index: u8,
@@ -17,8 +18,11 @@ struct ParsedOperand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Errors returned while assembling MIXAL source text.
 pub enum AssemblerError {
+    /// Syntax or semantic issue tied to a specific source line.
     Syntax { line: usize, message: String },
+    /// Error propagated from machine-level validation or encoding.
     Machine(MixError),
 }
 
@@ -36,6 +40,14 @@ impl From<MixError> for AssemblerError {
     }
 }
 
+/// Assembles MIXAL source code into an initialized [`MixState`].
+///
+/// The source is read line-by-line. Blank lines and trailing comments (`#` or
+/// `;`) are ignored. Each remaining line is parsed as a single instruction and
+/// written to memory starting at address `0`.
+///
+/// The returned state uses byte size `64` and has its instruction counter set
+/// to `0`.
 pub fn assemble(source: &str) -> Result<MixState, AssemblerError> {
     let mut state = MixState::blank(DEFAULT_BYTE_SIZE)?;
     let mut program_counter = 0usize;
@@ -69,6 +81,7 @@ pub fn assemble(source: &str) -> Result<MixState, AssemblerError> {
     Ok(state)
 }
 
+/// Parses one mnemonic plus operand text into a decoded instruction.
 fn parse_instruction(
     mnemonic: &str,
     operand_text: &str,
@@ -727,6 +740,7 @@ fn parse_instruction(
     }
 }
 
+/// Accepts mnemonics that forbid operands and validates emptiness.
 fn no_operand_instruction(
     operand_text: &str,
     line_no: usize,
@@ -741,6 +755,7 @@ fn no_operand_instruction(
     Ok(instruction)
 }
 
+/// Parses a general operand and builds an instruction from it.
 fn operand_instruction<F>(
     operand_text: &str,
     line_no: usize,
@@ -754,6 +769,7 @@ where
     Ok(builder(operand_from(&parsed)))
 }
 
+/// Parses an address-only operand and enforces fixed field semantics.
 fn fixed_address_instruction<F>(
     operand_text: &str,
     line_no: usize,
@@ -773,6 +789,7 @@ where
     Ok(builder(address_from(&parsed)))
 }
 
+/// Builds one of the `SL*`/`SR*` instruction variants.
 fn shift_instruction(
     operand_text: &str,
     line_no: usize,
@@ -783,6 +800,7 @@ fn shift_instruction(
     })
 }
 
+/// Builds one of the `LD*` instruction variants.
 fn load_instruction(
     operand_text: &str,
     line_no: usize,
@@ -796,6 +814,7 @@ fn load_instruction(
     })
 }
 
+/// Builds one of the `ST*` instruction variants.
 fn store_instruction(
     operand_text: &str,
     line_no: usize,
@@ -807,6 +826,7 @@ fn store_instruction(
     })
 }
 
+/// Internal selector for the I/O mnemonic family.
 enum IoKind {
     Jbus,
     Ioc,
@@ -815,6 +835,7 @@ enum IoKind {
     Jred,
 }
 
+/// Builds one of the I/O instruction variants (`JBUS`, `IOC`, `IN`, `OUT`, `JRED`).
 fn io_instruction(
     operand_text: &str,
     line_no: usize,
@@ -830,6 +851,7 @@ fn io_instruction(
     })
 }
 
+/// Parses I/O operand syntax `address[,index](unit)`.
 fn parse_io_operand(
     operand_text: &str,
     line_no: usize,
@@ -908,6 +930,7 @@ fn parse_io_operand(
     Ok((AddressSpec { address, index }, unit))
 }
 
+/// Builds one of the opcode-39 jump instruction variants.
 fn jump_instruction(
     operand_text: &str,
     line_no: usize,
@@ -918,6 +941,7 @@ fn jump_instruction(
     })
 }
 
+/// Builds one of the register-jump instruction variants.
 fn register_jump_instruction(
     operand_text: &str,
     line_no: usize,
@@ -929,6 +953,7 @@ fn register_jump_instruction(
     })
 }
 
+/// Builds one of the address-transfer instruction variants.
 fn addr_transfer_instruction(
     operand_text: &str,
     line_no: usize,
@@ -940,6 +965,7 @@ fn addr_transfer_instruction(
     })
 }
 
+/// Builds one of the compare instruction variants.
 fn compare_instruction(
     operand_text: &str,
     line_no: usize,
@@ -950,6 +976,7 @@ fn compare_instruction(
     })
 }
 
+/// Converts parsed operand to address-only representation.
 fn address_from(op: &ParsedOperand) -> AddressSpec {
     AddressSpec {
         address: op.address,
@@ -957,6 +984,7 @@ fn address_from(op: &ParsedOperand) -> AddressSpec {
     }
 }
 
+/// Converts parsed operand to full operand representation.
 fn operand_from(op: &ParsedOperand) -> OperandSpec {
     OperandSpec {
         addr: address_from(op),
@@ -964,6 +992,7 @@ fn operand_from(op: &ParsedOperand) -> OperandSpec {
     }
 }
 
+/// Parses general operand syntax `address[,index][(field)]`.
 fn parse_operand(
     operand_text: &str,
     line_no: usize,
@@ -1046,6 +1075,7 @@ fn parse_operand(
     })
 }
 
+/// Parses either packed field (`F`) or range field (`L:R`).
 fn parse_field(field_text: &str, line_no: usize) -> Result<u8, AssemblerError> {
     if field_text.is_empty() {
         return Err(asm_syntax(line_no, "empty field specification"));
@@ -1082,6 +1112,7 @@ fn parse_field(field_text: &str, line_no: usize) -> Result<u8, AssemblerError> {
     Ok(packed)
 }
 
+/// Parses one field endpoint (`L` or `R`).
 fn parse_field_component(
     value: &str,
     line_no: usize,
@@ -1098,6 +1129,7 @@ fn parse_field_component(
     Ok(parsed)
 }
 
+/// Removes trailing comments introduced by `#` or `;`.
 fn strip_comments(line: &str) -> &str {
     let hash_idx = line.find('#');
     let semi_idx = line.find(';');
@@ -1109,6 +1141,7 @@ fn strip_comments(line: &str) -> &str {
     }
 }
 
+/// Constructs a line-numbered assembler syntax error.
 fn asm_syntax(line: usize, message: &str) -> AssemblerError {
     AssemblerError::Syntax {
         line,

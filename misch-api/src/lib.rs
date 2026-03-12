@@ -19,6 +19,7 @@ const DEFAULT_OUTPUT_UNIT: u8 = 18;
 type Sessions = Mutex<HashMap<Uuid, Session>>;
 type ApiResult<T> = Result<Json<T>, status::Custom<Json<ErrorResponse>>>;
 
+/// Mutable emulation session stored in the API session map.
 struct Session {
     machine: MixState,
     io_buffers: Arc<Mutex<IoBuffers>>,
@@ -27,6 +28,7 @@ struct Session {
 }
 
 #[derive(Debug, Default)]
+/// In-memory I/O queues captured per session.
 struct IoBuffers {
     input_queues: HashMap<u8, VecDeque<i64>>,
     output_words: HashMap<u8, Vec<i64>>,
@@ -34,12 +36,14 @@ struct IoBuffers {
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "rocket::serde")]
+/// Standard JSON error envelope returned by API handlers.
 struct ErrorResponse {
     error: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "rocket::serde")]
+/// Device configuration used when creating a session.
 struct DeviceConfig {
     unit: u8,
     block_size: usize,
@@ -47,6 +51,7 @@ struct DeviceConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "rocket::serde")]
+/// Request body for `POST /sessions`.
 struct CreateSessionRequest {
     assembly: String,
     input_devices: Option<Vec<DeviceConfig>>,
@@ -55,6 +60,7 @@ struct CreateSessionRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "rocket::serde")]
+/// Response body for `POST /sessions`.
 struct CreateSessionResponse {
     session_id: Uuid,
     halted: bool,
@@ -62,6 +68,7 @@ struct CreateSessionResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "rocket::serde")]
+/// Response body for `POST /sessions/<id>/run`.
 struct RunResponse {
     halted: bool,
     steps_executed: usize,
@@ -70,6 +77,7 @@ struct RunResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "rocket::serde")]
+/// Snapshot of machine registers/flags and a memory window.
 struct SnapshotResponse {
     halted: bool,
     ic: u16,
@@ -85,6 +93,7 @@ struct SnapshotResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "rocket::serde")]
+/// Request body for appending text input to a device.
 struct InputTextRequest {
     unit: u8,
     text: String,
@@ -92,6 +101,7 @@ struct InputTextRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "rocket::serde")]
+/// Request body for appending raw word input to a device.
 struct InputRawRequest {
     unit: u8,
     words: Vec<i64>,
@@ -99,22 +109,26 @@ struct InputRawRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "rocket::serde")]
+/// Acknowledgement for accepted queued input.
 struct InputAcceptedResponse {
     queued_words: usize,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "rocket::serde")]
+/// Raw output words grouped by device unit.
 struct OutputRawResponse {
     units: HashMap<u8, Vec<i64>>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "rocket::serde")]
+/// Decoded output text grouped by device unit.
 struct OutputTextResponse {
     units: HashMap<u8, String>,
 }
 
+/// Builds a standardized JSON error response.
 fn error(
     status: Status,
     message: impl Into<String>,
@@ -127,6 +141,7 @@ fn error(
     )
 }
 
+/// Parses a UUID session id from a path segment.
 fn parse_session_id(
     id: &str,
 ) -> Result<Uuid, status::Custom<Json<ErrorResponse>>> {
@@ -135,6 +150,7 @@ fn parse_session_id(
     })
 }
 
+/// Creates an initialized emulation session from API request parameters.
 fn build_session(req: CreateSessionRequest) -> Result<Session, String> {
     let mut machine = assemble(&req.assembly).map_err(|err| err.to_string())?;
 
@@ -227,6 +243,7 @@ fn build_session(req: CreateSessionRequest) -> Result<Session, String> {
 }
 
 #[post("/sessions", data = "<req>")]
+/// Creates a new emulation session.
 fn create_session(
     sessions: &State<Sessions>,
     req: Json<CreateSessionRequest>,
@@ -246,6 +263,7 @@ fn create_session(
 }
 
 #[post("/sessions/<id>/run")]
+/// Runs the session until halt or maximum step limit.
 fn run_session(sessions: &State<Sessions>, id: &str) -> ApiResult<RunResponse> {
     let id = parse_session_id(id)?;
     let mut map = sessions.lock().map_err(|_| {
@@ -273,6 +291,7 @@ fn run_session(sessions: &State<Sessions>, id: &str) -> ApiResult<RunResponse> {
 }
 
 #[get("/sessions/<id>?<memory_start>&<memory_length>")]
+/// Returns a machine snapshot for a session.
 fn get_session(
     sessions: &State<Sessions>,
     id: &str,
@@ -318,6 +337,7 @@ fn get_session(
 }
 
 #[post("/sessions/<id>/io/input/text", data = "<req>")]
+/// Appends encoded text input to a configured input unit queue.
 fn append_input_text(
     sessions: &State<Sessions>,
     id: &str,
@@ -350,6 +370,7 @@ fn append_input_text(
 }
 
 #[post("/sessions/<id>/io/input/raw", data = "<req>")]
+/// Appends raw word input to a configured input unit queue.
 fn append_input_raw(
     sessions: &State<Sessions>,
     id: &str,
@@ -383,6 +404,7 @@ fn append_input_raw(
 }
 
 #[get("/sessions/<id>/io/output/raw?<unit>&<drain>")]
+/// Returns captured output words for one or all configured output units.
 fn get_output_raw(
     sessions: &State<Sessions>,
     id: &str,
@@ -437,6 +459,7 @@ fn get_output_raw(
 }
 
 #[get("/sessions/<id>/io/output/text?<unit>&<drain>")]
+/// Returns captured output decoded through the MIX character table.
 fn get_output_text(
     sessions: &State<Sessions>,
     id: &str,
@@ -452,6 +475,7 @@ fn get_output_text(
 }
 
 #[delete("/sessions/<id>")]
+/// Deletes an existing session.
 fn delete_session(
     sessions: &State<Sessions>,
     id: &str,
@@ -471,6 +495,7 @@ fn delete_session(
 }
 
 #[get("/openapi.json")]
+/// Returns the OpenAPI 3.0 specification document.
 fn openapi_spec() -> Json<Value> {
     Json(json!({
         "openapi": "3.0.3",
@@ -678,6 +703,7 @@ fn openapi_spec() -> Json<Value> {
 }
 
 #[get("/docs")]
+/// Serves a minimal Swagger UI page bound to the local OpenAPI endpoint.
 fn swagger_ui() -> RawHtml<&'static str> {
     RawHtml(
         r#"<!doctype html>
@@ -704,6 +730,10 @@ fn swagger_ui() -> RawHtml<&'static str> {
     )
 }
 
+/// Builds the Rocket application with all `misch` API routes mounted.
+///
+/// Routes are available under `/api/v1`, including session lifecycle,
+/// execution, I/O endpoints, and OpenAPI/Swagger documentation endpoints.
 pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
     rocket::build()
         .manage(Mutex::new(HashMap::<Uuid, Session>::new()))

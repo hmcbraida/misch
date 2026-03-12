@@ -12,7 +12,9 @@ const MIX_CHAR_TABLE: [&str; 56] = [
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Errors for MIX character encoding/decoding helpers.
 pub enum MixCharError {
+    /// A Unicode scalar that cannot be represented in the MIX character table.
     UnsupportedCharacter(char),
 }
 
@@ -28,6 +30,11 @@ impl fmt::Display for MixCharError {
 
 impl std::error::Error for MixCharError {}
 
+/// Encodes text into MIX words using the MIX character table.
+///
+/// Input is normalized by uppercasing ASCII lowercase letters and dropping
+/// `\n`/`\r`. Output words contain 5 packed MIX character codes each, padded
+/// with spaces (`0`) when the final chunk is shorter than 5 symbols.
 pub fn encode_text_to_words(text: &str) -> Result<Vec<i64>, MixCharError> {
     let mut codes = Vec::new();
     for raw_char in text.chars() {
@@ -56,6 +63,10 @@ pub fn encode_text_to_words(text: &str) -> Result<Vec<i64>, MixCharError> {
     Ok(words)
 }
 
+/// Decodes one packed MIX word into exactly 5 display characters.
+///
+/// If any byte is outside the known character table, `?` is used for that
+/// position.
 pub fn decode_word_to_text(word: i64) -> String {
     let mut value = word.abs();
     let mut codes = [0u8; WORD_BYTES];
@@ -75,6 +86,7 @@ pub fn decode_word_to_text(word: i64) -> String {
     out
 }
 
+/// Decodes multiple packed MIX words and concatenates the resulting text.
 pub fn decode_words_to_text(words: &[i64]) -> String {
     let mut out = String::new();
     for &word in words {
@@ -83,6 +95,7 @@ pub fn decode_words_to_text(words: &[i64]) -> String {
     out
 }
 
+/// Returns the MIX character code for a supported symbol.
 fn mix_code_for_char(ch: char) -> Option<u8> {
     match ch {
         ' ' => Some(0),

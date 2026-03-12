@@ -9,6 +9,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 #[derive(Debug)]
+/// Runtime configuration parsed from CLI arguments.
 struct Config {
     assembly_path: PathBuf,
     paper_tape_path: Option<PathBuf>,
@@ -19,6 +20,7 @@ struct Config {
 }
 
 #[derive(Debug)]
+/// Error type used by the CLI entrypoint.
 enum CliError {
     Usage(String),
     Io(io::Error),
@@ -65,6 +67,7 @@ impl From<MixCharError> for CliError {
     }
 }
 
+/// CLI entrypoint.
 fn main() {
     if let Err(err) = run() {
         eprintln!("error: {err}");
@@ -72,6 +75,7 @@ fn main() {
     }
 }
 
+/// Runs the end-to-end CLI flow: parse, load, execute, and stream output.
 fn run() -> Result<(), CliError> {
     let config = parse_args(env::args().skip(1))?;
     let source = fs::read_to_string(&config.assembly_path)?;
@@ -130,6 +134,7 @@ fn run() -> Result<(), CliError> {
     Ok(())
 }
 
+/// Parses command-line arguments into a [`Config`].
 fn parse_args<I>(args: I) -> Result<Config, CliError>
 where
     I: Iterator<Item = String>,
@@ -222,12 +227,14 @@ where
     })
 }
 
+/// Parses a required `u8` option value.
 fn parse_u8_arg(name: &str, value: &str) -> Result<u8, CliError> {
     value.parse::<u8>().map_err(|_| {
         CliError::Usage(format!("invalid value for {name}: `{value}`"))
     })
 }
 
+/// Parses a required positive `usize` option value.
 fn parse_usize_arg(name: &str, value: &str) -> Result<usize, CliError> {
     let parsed = value.parse::<usize>().map_err(|_| {
         CliError::Usage(format!("invalid value for {name}: `{value}`"))
@@ -238,6 +245,7 @@ fn parse_usize_arg(name: &str, value: &str) -> Result<usize, CliError> {
     Ok(parsed)
 }
 
+/// Returns static help text for usage errors and `--help`.
 fn help_text() -> &'static str {
     "Usage: misch-cli <assembly-file> [options]\n\nOptions:\n  --paper-tape <path>             UTF-8 text input for paper tape\n  --paper-tape-unit <unit>        MIX input unit (default: 16)\n  --paper-tape-block-size <n>     Words per paper tape read (default: 1)\n  --line-writer-unit <unit>       MIX output unit for stdout (default: 18)\n  --line-writer-block-size <n>    Words per line writer write (default: 1)"
 }
