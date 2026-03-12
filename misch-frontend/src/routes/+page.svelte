@@ -13,7 +13,7 @@
 		units: Record<string, string>;
 	};
 
-	const API_BASE = '/api/v1';
+	const API_BASE = import.meta.env.PUBLIC_API_BASE || '/api/v1';
 	const PAPER_TAPE_UNIT = 16;
 	const LINE_WRITER_UNIT = 18;
 	const DEFAULT_BLOCK_SIZE = 1;

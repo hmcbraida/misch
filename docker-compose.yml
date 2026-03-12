@@ -1,0 +1,13 @@
+services:
+  api:
+    image: ${MISCH_API_IMAGE:-misch-api:local}
+    build:
+      context: .
+      dockerfile: misch-api/Dockerfile
+    restart: unless-stopped
+    environment:
+      ROCKET_ADDRESS: 0.0.0.0
+      ROCKET_PORT: 8000
+      ROCKET_LOG_LEVEL: normal
+    ports:
+      - "127.0.0.1:${MISCH_API_PORT:-8000}:8000"
