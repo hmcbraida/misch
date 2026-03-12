@@ -1,6 +1,13 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { env } from '$env/dynamic/public';
+	import {
+		DEFAULT_EXAMPLE_PROGRAM_ID,
+		EXAMPLE_PROGRAMS,
+		EXAMPLE_PROGRAMS_BY_ID,
+		type ExampleProgram,
+		type ExampleProgramId
+	} from '$lib/examplePrograms';
 
 	type UiStatus = 'idle' | 'running' | 'success' | 'error';
 	type DragMode = 'horizontal' | 'vertical';
@@ -20,88 +27,12 @@
 	const DEFAULT_BLOCK_SIZE = 1;
 	const LINE_WRAP = 100;
 
-	const primesExample = `* Prime printer with double output buffers.
-* Reads one 5-char decimal word from paper tape (unit 16),
-* prints that many primes to the line printer (unit 18).
+	const exampleProgramById: Record<ExampleProgramId, ExampleProgram> = EXAMPLE_PROGRAMS_BY_ID;
 
-PTAPE   EQU 16
-PRINTER EQU 18
-START   EQU 3000
+	const defaultExample = exampleProgramById[DEFAULT_EXAMPLE_PROGRAM_ID];
 
-        ORIG START
-        IN INWORD(PTAPE)
-        ENTA 0
-        LDX INWORD
-        NUM
-        STA TARGETN
-
-        ENT1 0
-        ENTA 2
-        STA CAND
-        ENTA 1
-        STA WHICH
-
-LOOP    CMP1 TARGETN
-        JGE DONE
-
-        ENTA 2
-        STA DIVISOR
-1H      LDA DIVISOR
-        MUL DIVISOR
-        CMPX CAND
-        JG 2F
-
-        ENTA 0
-        LDX CAND
-        DIV DIVISOR
-        JXZ 3F
-
-        LDA DIVISOR
-        INCA 1
-        STA DIVISOR
-        JMP 1B
-
-2H      LDA CAND
-        CHAR
-        LDA WHICH
-        CMPA =1=
-        JNE 4F
-
-        STX BUF1
-        OUT BUF1(PRINTER)
-        ENTA 2
-        STA WHICH
-        JMP 5F
-
-4H      STX BUF2
-        OUT BUF2(PRINTER)
-        ENTA 1
-        STA WHICH
-
-5H      OUT SPACE(PRINTER)
-        INC1 1
-
-3H      LDA CAND
-        INCA 1
-        STA CAND
-        JMP LOOP
-
-DONE    HLT
-
-        ORIG *+2
-INWORD  CON 0
-TARGETN CON 0
-CAND    CON 0
-DIVISOR CON 0
-WHICH   CON 1
-SPACE   ALF "     "
-BUF1    CON 0
-BUF2    CON 0
-
-        END START`;
-
-	let assembly = $state(primesExample);
-	let paperTapeInput = $state('00017');
+	let assembly = $state(defaultExample.assembly);
+	let paperTapeInput = $state(defaultExample.paperTapeInput);
 	let lineWriterOutput = $state('');
 	let errorMessage = $state('');
 	let status = $state<UiStatus>('idle');
@@ -124,6 +55,50 @@ BUF2    CON 0
 		success: 'border-emerald-300 bg-emerald-100 text-emerald-800',
 		error: 'border-rose-300 bg-rose-100 text-rose-800'
 	};
+
+	function findMatchingExampleProgramId(): ExampleProgramId | null {
+		for (const program of EXAMPLE_PROGRAMS) {
+			if (assembly === program.assembly && paperTapeInput === program.paperTapeInput) {
+				return program.id;
+			}
+		}
+
+		return null;
+	}
+
+	const selectedExampleId = $derived<ExampleProgramId | 'custom'>(
+		findMatchingExampleProgramId() ?? 'custom'
+	);
+
+	function setExampleProgram(nextExampleId: ExampleProgramId): void {
+		const selectedProgram = exampleProgramById[nextExampleId];
+		assembly = selectedProgram.assembly;
+		paperTapeInput = selectedProgram.paperTapeInput;
+		errorMessage = '';
+	}
+
+	function onExampleProgramChange(event: Event): void {
+		const target = event.currentTarget;
+		if (!(target instanceof HTMLSelectElement)) {
+			return;
+		}
+
+		const nextValue = target.value as ExampleProgramId | 'custom';
+		if (nextValue === 'custom') {
+			return;
+		}
+
+		if (
+			selectedExampleId === 'custom' &&
+			typeof window !== 'undefined' &&
+			!window.confirm('You have custom edits. Discard them and load this example?')
+		) {
+			target.value = 'custom';
+			return;
+		}
+
+		setExampleProgram(nextValue);
+	}
 
 	function clamp(value: number, min: number, max: number): number {
 		return Math.min(max, Math.max(min, value));
@@ -291,7 +266,25 @@ BUF2    CON 0
 			class="flex flex-col gap-2 rounded-xl border border-amber-200/80 bg-amber-50/90 px-4 py-3 shadow-[0_6px_18px_-14px_rgba(40,20,8,0.15)] md:flex-row md:items-center md:justify-between"
 		>
 			<h1 class="m-0 text-xl uppercase tracking-[0.08em] md:text-2xl">Misch</h1>
-			<div class="flex items-center gap-2">
+			<div class="flex flex-wrap items-center justify-end gap-2">
+				<div class="flex items-center gap-2">
+					<label class="text-xs font-semibold uppercase tracking-[0.04em] text-stone-700" for="example-program">
+						Example
+					</label>
+					<select
+						id="example-program"
+						class="cursor-pointer rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-sm text-stone-900 outline-none ring-orange-700/50 focus:ring-2"
+						value={selectedExampleId}
+						onchange={onExampleProgramChange}
+					>
+						{#if selectedExampleId === 'custom'}
+							<option value="custom">--custom--</option>
+						{/if}
+						{#each EXAMPLE_PROGRAMS as program}
+							<option value={program.id}>{program.label}</option>
+						{/each}
+					</select>
+				</div>
 				<button
 					type="button"
 					class="cursor-pointer rounded-full bg-gradient-to-b from-orange-700 to-orange-800 px-4 py-2 text-sm font-semibold text-white shadow-[0_8px_18px_-12px_rgba(122,47,19,0.85)] transition hover:-translate-y-px disabled:cursor-wait disabled:opacity-70"
