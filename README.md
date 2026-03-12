@@ -57,6 +57,8 @@ Then open the local Vite/SvelteKit dev URL shown in the terminal.
 
 Frontend API base path is configurable via `PUBLIC_API_BASE` (see
 `misch-frontend/.env.example`). Local development defaults to `/api/v1`.
+Frontend URL base path is configurable at build time via `BASE_PATH`
+(`''` for local development, `/misch` for production subpath hosting).
 
 ## Running the CLI
 

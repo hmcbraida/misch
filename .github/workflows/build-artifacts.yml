@@ -34,6 +34,7 @@ jobs:
 
       - name: Build static frontend
         env:
+          BASE_PATH: /misch
           PUBLIC_API_BASE: /misch/api/v1
         run: bun run build
 
