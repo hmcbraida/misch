@@ -1,3 +1,4 @@
+use crate::MixError;
 use crate::instruction::{
     self, AddrTransferMode, AddrTransferTarget, AddressSpec, CompareTarget,
     Instruction, JumpCondition, LoadTarget, OperandSpec, RegisterJumpCondition,
@@ -5,7 +6,6 @@ use crate::instruction::{
 };
 use crate::io::{CallbackInputDevice, CallbackOutputDevice, DeviceSlot};
 use crate::word::{Comparison, MixHalfWord, MixWord, Sign};
-use crate::MixError;
 
 const MEMORY_SIZE: usize = 4000;
 const DEVICE_COUNT: usize = 21;
