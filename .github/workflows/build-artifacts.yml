@@ -87,6 +87,15 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+      - name: Build release API binary
+        run: cargo build --release -p misch-api
+
+      - name: Prepare Docker build artifact
+        run: |
+          mkdir -p docker-artifacts
+          cp target/release/misch-api docker-artifacts/misch-api
+          chmod +x docker-artifacts/misch-api
+
       - name: Set image name
         run: echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/misch-api" >> "$GITHUB_ENV"
 
