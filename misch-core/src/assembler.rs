@@ -2243,10 +2243,11 @@ fn apply_binary_op(
     op: BinaryOp,
     line_no: usize,
 ) -> Result<i64, AssemblerError> {
+    let overflow = || asm_syntax(line_no, "integer overflow in expression");
     match op {
-        BinaryOp::Add => Ok(lhs + rhs),
-        BinaryOp::Sub => Ok(lhs - rhs),
-        BinaryOp::Mul => Ok(lhs * rhs),
+        BinaryOp::Add => lhs.checked_add(rhs).ok_or_else(overflow),
+        BinaryOp::Sub => lhs.checked_sub(rhs).ok_or_else(overflow),
+        BinaryOp::Mul => lhs.checked_mul(rhs).ok_or_else(overflow),
         BinaryOp::Div => {
             if rhs == 0 {
                 return Err(asm_syntax(
@@ -2254,7 +2255,7 @@ fn apply_binary_op(
                     "division by zero in expression",
                 ));
             }
-            Ok(lhs / rhs)
+            lhs.checked_div(rhs).ok_or_else(overflow)
         }
         BinaryOp::DivLong => {
             if rhs == 0 {
@@ -2266,9 +2267,12 @@ fn apply_binary_op(
             let wide = MixWord::from_signed(lhs, DEFAULT_BYTE_SIZE)
                 .magnitude(DEFAULT_BYTE_SIZE)
                 * i64::from(DEFAULT_BYTE_SIZE).pow(5);
-            Ok(wide / rhs)
+            wide.checked_div(rhs).ok_or_else(overflow)
         }
-        BinaryOp::Fspec => Ok(lhs * 8 + rhs),
+        BinaryOp::Fspec => lhs
+            .checked_mul(8)
+            .and_then(|v| v.checked_add(rhs))
+            .ok_or_else(overflow),
     }
 }
 
@@ -2297,7 +2301,9 @@ impl ExprParser<'_, '_> {
             }
         }
         let atom = self.parse_atom()?;
-        Ok(sign * atom)
+        sign.checked_mul(atom).ok_or_else(|| {
+            asm_syntax(self.ctx.line_no, "integer overflow in expression")
+        })
     }
 
     fn parse_atom(&mut self) -> Result<i64, AssemblerError> {
@@ -2816,6 +2822,16 @@ mod tests {
         assert!(matches!(
             result,
             Err(AssemblerError::Syntax { message, .. }) if message.contains("END")
+        ));
+    }
+
+    #[test]
+    fn rejects_overflowing_expressions_without_panicking() {
+        let result = assemble("A EQU 9223372036854775807+1\nHLT\nEND 0\n");
+        assert!(matches!(
+            result,
+            Err(AssemblerError::Syntax { line: 1, message })
+                if message.contains("overflow")
         ));
     }
 

@@ -675,8 +675,10 @@ impl MixState {
                     (1_u128 << total_bits) - 1
                 };
                 value = match mode {
-                    ShiftMode::Slb => (value << shift) & max_mask,
-                    ShiftMode::Srb => value >> shift,
+                    ShiftMode::Slb => {
+                        value.checked_shl(shift).unwrap_or(0) & max_mask
+                    }
+                    ShiftMode::Srb => value.checked_shr(shift).unwrap_or(0),
                     _ => unreachable!(),
                 };
 
@@ -1237,6 +1239,31 @@ mod tests {
         s.advance_state().unwrap();
         assert_eq!(s.r_a.bytes, [0, 0, 6, 7, 8]);
         assert_eq!(s.r_x.bytes, [9, 10, 3, 4, 5]);
+    }
+
+    #[test]
+    fn bit_shifts_do_not_panic_for_very_large_amounts() {
+        let mut s = machine();
+        s.r_a.bytes = [1, 2, 3, 4, 5];
+        s.r_x.bytes = [6, 7, 8, 9, 10];
+        s.r_i[0] = MixHalfWord::from_signed(4095, BYTE_SIZE);
+
+        s.memory[0] = instr(Instruction::Shift {
+            addr: address(4095, 1),
+            mode: ShiftMode::Slb,
+        });
+        s.memory[1] = instr(Instruction::Shift {
+            addr: address(4095, 1),
+            mode: ShiftMode::Srb,
+        });
+
+        s.advance_state().unwrap();
+        assert_eq!(s.r_a.bytes, [0, 0, 0, 0, 0]);
+        assert_eq!(s.r_x.bytes, [0, 0, 0, 0, 0]);
+
+        s.advance_state().unwrap();
+        assert_eq!(s.r_a.bytes, [0, 0, 0, 0, 0]);
+        assert_eq!(s.r_x.bytes, [0, 0, 0, 0, 0]);
     }
 
     #[test]
