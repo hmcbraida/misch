@@ -1,6 +1,6 @@
 use rocket::http::Status;
 use rocket::local::blocking::Client;
-use rocket::serde::json::serde_json::{json, Value};
+use rocket::serde::json::serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
