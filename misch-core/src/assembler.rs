@@ -1,3 +1,17 @@
+//! MIXAL assembler implementation.
+//!
+//! Exposes a method [`assemble`] which consumes a string representing a MIXAL
+//! program and returns the [`MixState`] which would be assembled as a result.
+//!
+//! High-level procedure:
+//! - Parse source text into a compact line model ([`ParsedLine`]).
+//! - Run a first pass to build symbol tables and assign locations.
+//! - Run a second pass to encode instructions/directives into [`MixState`] memory.
+//!
+//! The implementation intentionally keeps parsing and encoding separate:
+//! pass 1 resolves layout/symbol definitions while pass 2 performs full operand
+//! evaluation and instruction encoding.
+
 use crate::instruction::{
     AddrTransferMode, AddrTransferTarget, AddressSpec, CompareTarget,
     Instruction, JumpCondition, LoadTarget, OperandSpec, RegisterJumpCondition,
@@ -37,6 +51,7 @@ impl From<MixError> for AssemblerError {
 }
 
 #[derive(Debug, Clone)]
+/// One non-empty, non-comment logical source line.
 struct ParsedLine {
     line_no: usize,
     order: usize,
@@ -45,6 +60,7 @@ struct ParsedLine {
 }
 
 #[derive(Debug, Clone)]
+/// Parsed line category: instruction or assembler directive.
 enum LineKind {
     Instruction {
         mnemonic: String,
@@ -57,6 +73,7 @@ enum LineKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Supported assembler directives.
 enum Directive {
     Orig,
     Equ,
@@ -66,6 +83,9 @@ enum Directive {
 }
 
 #[derive(Debug, Clone)]
+/// Represents a value targeting a particular memory location.
+///
+/// Evolves from [`ParsedLine`].
 struct AsmItem {
     line_no: usize,
     order: usize,
@@ -74,6 +94,7 @@ struct AsmItem {
 }
 
 #[derive(Debug, Clone)]
+/// Encodable item kinds carried from pass 1 to pass 2.
 enum ItemKind {
     Instruction { mnemonic: String, operand: String },
     Con { operand: String },
@@ -81,12 +102,22 @@ enum ItemKind {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Symbol definition metadata used for resolution.
+///
+/// In the case of a location (non-EQU) symbol, this can be seen as something
+/// which directly maps the source assembly to the target machine memory state:
+/// mapping [`SymbolDef::order`] to [`SymbolDef::value`].
 struct SymbolDef {
     value: i64,
     order: usize,
 }
 
 #[derive(Debug, Clone)]
+/// Global and local symbol spaces.
+///
+/// - [`SymbolTables::globals`] stores ordinary labels.
+/// - [`SymbolTables::locals`] stores MIX local labels (`1H`..`9H`) as ordered
+///   definition lists.
 struct SymbolTables {
     globals: HashMap<String, SymbolDef>,
     locals: HashMap<u8, Vec<SymbolDef>>,
@@ -100,6 +131,10 @@ impl SymbolTables {
         }
     }
 
+    /// Defines a symbol at the point.
+    ///
+    /// This includes parsing it into either a local or a global symbol
+    /// depending on if it matches the `nH` pattern.
     fn define(
         &mut self,
         label: &str,
@@ -126,6 +161,9 @@ impl SymbolTables {
         Ok(())
     }
 
+    /// Resolves the value of the given symbol.
+    ///
+    /// Includes detection of local (`nF`, `nB`) references.
     fn resolve(
         &self,
         symbol: &str,
@@ -179,6 +217,7 @@ impl SymbolTables {
 }
 
 #[derive(Debug)]
+/// State from pass 1, consumed by pass 2.
 struct FirstPass {
     items: Vec<AsmItem>,
     symbols: SymbolTables,
@@ -187,6 +226,7 @@ struct FirstPass {
 }
 
 #[derive(Debug, Clone)]
+/// Deferred literal allocated during operand parsing (e.g. `=5=`).
 struct LiteralEntry {
     addr: i64,
     wexpr: String,
@@ -195,6 +235,7 @@ struct LiteralEntry {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Expression evaluation context to improve diagnostics and symbol rules.
 enum OperandComponent {
     Address,
     Index,
@@ -203,6 +244,7 @@ enum OperandComponent {
 }
 
 #[derive(Debug, Clone)]
+/// Shared context used when evaluating expressions and operands.
 struct EvalContext<'a> {
     symbols: &'a SymbolTables,
     line_no: usize,
@@ -219,6 +261,9 @@ pub fn assemble(source: &str) -> Result<MixState, AssemblerError> {
     second_pass(&first_pass)
 }
 
+/// Parses source text into logical lines, removing comments/blank lines.
+///
+/// Parsing stops after the first `END`.
 fn parse_source(source: &str) -> Result<Vec<ParsedLine>, AssemblerError> {
     let mut out = Vec::new();
     let mut saw_end = false;
@@ -257,6 +302,7 @@ fn parse_source(source: &str) -> Result<Vec<ParsedLine>, AssemblerError> {
     Ok(out)
 }
 
+/// Parses one logical line into `{label?, mnemonic/directive, operand}`.
 fn parse_logical_line(
     line: &str,
     line_no: usize,
@@ -297,7 +343,16 @@ fn parse_logical_line(
     })
 }
 
+/// First assembly pass.
+///
+/// Responsibilities:
+/// - define symbols (`LABEL`, `EQU`, local labels)
+/// - maintain location counter (`ORIG`, emitted words)
+/// - collect encodable items for pass 2
+/// - capture start address from `END`
 fn first_pass(lines: &[ParsedLine]) -> Result<FirstPass, AssemblerError> {
+    // Pass 1 assigns absolute locations and records symbol definitions.
+    // It does not encode instructions yet.
     let mut items = Vec::new();
     let mut symbols = SymbolTables::new();
     let mut location_counter = 0_i64;
@@ -435,7 +490,11 @@ fn first_pass(lines: &[ParsedLine]) -> Result<FirstPass, AssemblerError> {
     })
 }
 
+/// Second assembly pass.
+///
+/// Encodes all first-pass items into memory and emits deferred literal words.
 fn second_pass(first: &FirstPass) -> Result<MixState, AssemblerError> {
+    // Pass 2 encodes all queued items and then emits deferred literals.
     let mut state = MixState::blank(DEFAULT_BYTE_SIZE)?;
     let mut literal_entries: Vec<LiteralEntry> = Vec::new();
     let mut next_literal_addr = first.literal_start;
@@ -521,6 +580,7 @@ fn ensure_location_in_memory(
     Ok(())
 }
 
+/// Parses and validates an `ALF` payload into exactly 5 MIX characters.
 fn assemble_alf_word(
     operand: &str,
     line_no: usize,
@@ -535,6 +595,7 @@ fn assemble_alf_word(
     Ok(MixWord::from_signed(value, DEFAULT_BYTE_SIZE))
 }
 
+/// Normalizes `ALF` source operand (quoted or bare) and pads to 5 chars.
 fn parse_alf_text(
     operand: &str,
     line_no: usize,
@@ -567,6 +628,9 @@ fn parse_alf_text(
     Ok(text)
 }
 
+/// Parses the operand token for a mnemonic/directive.
+///
+/// `ALF` is special-cased to preserve quoted whitespace content.
 fn parse_operand_text(
     mnemonic: &str,
     rest: &str,
@@ -595,6 +659,7 @@ fn parse_operand_text(
     Ok(token.to_owned())
 }
 
+/// Converts one mnemonic + operand text into a typed instruction variant.
 fn build_instruction(
     mnemonic: &str,
     operand_text: &str,
@@ -602,6 +667,7 @@ fn build_instruction(
     literal_entries: &mut Vec<LiteralEntry>,
     next_literal_addr: &mut i64,
 ) -> Result<Instruction, AssemblerError> {
+    // Table-style mnemonic dispatch into typed instruction constructors.
     match mnemonic {
         "NOP" => {
             no_operand_instruction(operand_text, ctx.line_no, Instruction::Nop)
@@ -2031,6 +2097,7 @@ fn compare_instruction(
     )
 }
 
+/// Parses and evaluates MIX operand parts into encoded fields.
 fn parse_operand_value(
     operand_text: &str,
     default_field: u8,
@@ -2040,6 +2107,8 @@ fn parse_operand_value(
     literal_entries: &mut Vec<LiteralEntry>,
     next_literal_addr: &mut i64,
 ) -> Result<EvaluatedOperand, AssemblerError> {
+    // Operand grammar handled here:
+    //   address[,index][(field)]
     if operand_text.is_empty() {
         return Ok(EvaluatedOperand {
             address: 0,
@@ -2132,6 +2201,7 @@ fn parse_operand_value(
     })
 }
 
+/// Evaluates the address component, including literal pool allocation.
 fn eval_address_value(
     address_text: &str,
     allow_literal_address: bool,
@@ -2139,6 +2209,8 @@ fn eval_address_value(
     literal_entries: &mut Vec<LiteralEntry>,
     next_literal_addr: &mut i64,
 ) -> Result<i64, AssemblerError> {
+    // Literal constants in address position allocate pool entries immediately
+    // and return their assigned address.
     if allow_literal_address && is_literal_constant(address_text) {
         ensure_location_in_memory(*next_literal_addr, ctx.line_no)?;
         let inner = address_text[1..address_text.len() - 1].trim().to_owned();
@@ -2164,11 +2236,14 @@ fn eval_address_value(
     )
 }
 
+/// Evaluates a MIX w-expression (`expr[(f)]` terms separated by commas).
 fn eval_w_expression(
     text: &str,
     ctx: &EvalContext<'_>,
     component: OperandComponent,
 ) -> Result<i64, AssemblerError> {
+    // A w-expression is a comma-separated sequence of terms, each optionally
+    // carrying its own field spec. Terms are merged by field stores.
     let mut acc = MixWord::ZERO;
     for term in split_top_level_commas(text) {
         let (exp_text, fspec_opt) = split_wexpr_term(term, ctx.line_no)?;
@@ -2203,11 +2278,13 @@ fn eval_w_expression(
     Ok(acc.as_signed_i64(DEFAULT_BYTE_SIZE))
 }
 
+/// Evaluates a scalar expression used by operands and directives.
 fn eval_expression(
     text: &str,
     ctx: &EvalContext<'_>,
     _component: OperandComponent,
 ) -> Result<i64, AssemblerError> {
+    // Simple left-to-right expression parser used by operands/directives.
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err(asm_syntax(ctx.line_no, "empty expression"));
@@ -2293,6 +2370,7 @@ struct ExprParser<'a, 'b> {
 }
 
 impl ExprParser<'_, '_> {
+    // Signed atom parser allows repeated unary +/- prefixes.
     fn parse_signed_atom(&mut self) -> Result<i64, AssemblerError> {
         let mut sign = 1_i64;
         while self.peek_char() == Some('+') || self.peek_char() == Some('-') {
@@ -2410,6 +2488,7 @@ impl ExprParser<'_, '_> {
 }
 
 fn split_top_level_commas(text: &str) -> Vec<&str> {
+    // Split by commas not nested inside parentheses.
     let mut out = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
@@ -2432,6 +2511,7 @@ fn split_wexpr_term<'a>(
     term: &'a str,
     line_no: usize,
 ) -> Result<(&'a str, Option<&'a str>), AssemblerError> {
+    // Splits `expr(fspec)` into `(expr, Some(fspec))`.
     if term.is_empty() {
         return Err(asm_syntax(line_no, "empty term in w-expression"));
     }
