@@ -1,3 +1,9 @@
+use super::pass1::{FirstPass, ItemKind};
+use super::{
+    AssemblerError, DEFAULT_BYTE_SIZE, EvalContext, OperandComponent,
+    asm_syntax, ensure_location_in_memory,
+};
+use crate::MixCharError;
 use crate::instruction::{
     AddrTransferMode, AddrTransferTarget, AddressSpec, CompareTarget,
     Instruction, JumpCondition, LoadTarget, OperandSpec, RegisterJumpCondition,
@@ -6,187 +12,9 @@ use crate::instruction::{
 use crate::mixchar::encode_text_to_words;
 use crate::state::MixState;
 use crate::word::MixWord;
-use crate::{MixCharError, MixError};
-use std::collections::HashMap;
-use std::fmt;
-
-const DEFAULT_BYTE_SIZE: u16 = 64;
-const MIX_MEMORY_SIZE: i64 = 4000;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// Errors returned while assembling MIXAL source text.
-pub enum AssemblerError {
-    /// Syntax or semantic issue tied to a specific source line.
-    Syntax { line: usize, message: String },
-    /// Error propagated from machine-level validation or encoding.
-    Machine(MixError),
-}
-
-impl fmt::Display for AssemblerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-impl std::error::Error for AssemblerError {}
-
-impl From<MixError> for AssemblerError {
-    fn from(value: MixError) -> Self {
-        Self::Machine(value)
-    }
-}
 
 #[derive(Debug, Clone)]
-struct ParsedLine {
-    line_no: usize,
-    order: usize,
-    label: Option<String>,
-    kind: LineKind,
-}
-
-#[derive(Debug, Clone)]
-enum LineKind {
-    Instruction {
-        mnemonic: String,
-        operand: String,
-    },
-    Directive {
-        directive: Directive,
-        operand: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Directive {
-    Orig,
-    Equ,
-    Con,
-    Alf,
-    End,
-}
-
-#[derive(Debug, Clone)]
-struct AsmItem {
-    line_no: usize,
-    order: usize,
-    location: i64,
-    kind: ItemKind,
-}
-
-#[derive(Debug, Clone)]
-enum ItemKind {
-    Instruction { mnemonic: String, operand: String },
-    Con { operand: String },
-    Alf { operand: String },
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SymbolDef {
-    value: i64,
-    order: usize,
-}
-
-#[derive(Debug, Clone)]
-struct SymbolTables {
-    globals: HashMap<String, SymbolDef>,
-    locals: HashMap<u8, Vec<SymbolDef>>,
-}
-
-impl SymbolTables {
-    fn new() -> Self {
-        Self {
-            globals: HashMap::new(),
-            locals: HashMap::new(),
-        }
-    }
-
-    fn define(
-        &mut self,
-        label: &str,
-        value: i64,
-        order: usize,
-        line_no: usize,
-    ) -> Result<(), AssemblerError> {
-        if let Some(local_digit) = local_h_digit(label) {
-            self.locals
-                .entry(local_digit)
-                .or_default()
-                .push(SymbolDef { value, order });
-            return Ok(());
-        }
-
-        if self.globals.contains_key(label) {
-            return Err(asm_syntax(
-                line_no,
-                &format!("symbol `{label}` is already defined"),
-            ));
-        }
-        self.globals
-            .insert(label.to_owned(), SymbolDef { value, order });
-        Ok(())
-    }
-
-    fn resolve(
-        &self,
-        symbol: &str,
-        usage_order: usize,
-        allow_future: bool,
-        line_no: usize,
-    ) -> Result<i64, AssemblerError> {
-        if let Some((digit, flavor)) = local_symbol_ref(symbol) {
-            let defs = self.locals.get(&digit).ok_or_else(|| {
-                asm_syntax(
-                    line_no,
-                    &format!("undefined local symbol `{symbol}`"),
-                )
-            })?;
-            let candidate = match flavor {
-                'B' => defs.iter().rev().find(|d| d.order < usage_order),
-                'F' => defs.iter().find(|d| d.order > usage_order),
-                'H' => defs.iter().rev().find(|d| d.order <= usage_order),
-                _ => None,
-            };
-            let def = candidate.ok_or_else(|| {
-                asm_syntax(
-                    line_no,
-                    &format!("undefined local symbol `{symbol}`"),
-                )
-            })?;
-            if def.order > usage_order && !allow_future {
-                return Err(asm_syntax(
-                    line_no,
-                    &format!(
-                        "future reference `{symbol}` is only allowed as standalone address"
-                    ),
-                ));
-            }
-            return Ok(def.value);
-        }
-
-        let def = self.globals.get(symbol).ok_or_else(|| {
-            asm_syntax(line_no, &format!("undefined symbol `{symbol}`"))
-        })?;
-        if def.order > usage_order && !allow_future {
-            return Err(asm_syntax(
-                line_no,
-                &format!(
-                    "future reference `{symbol}` is only allowed as standalone address"
-                ),
-            ));
-        }
-        Ok(def.value)
-    }
-}
-
-#[derive(Debug)]
-struct FirstPass {
-    items: Vec<AsmItem>,
-    symbols: SymbolTables,
-    end_start: i64,
-    literal_start: i64,
-}
-
-#[derive(Debug, Clone)]
+/// Deferred literal allocated during operand parsing (e.g. `=5=`).
 struct LiteralEntry {
     addr: i64,
     wexpr: String,
@@ -194,248 +22,13 @@ struct LiteralEntry {
     order: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum OperandComponent {
-    Address,
-    Index,
-    Field,
-    WExpr,
-}
-
-#[derive(Debug, Clone)]
-struct EvalContext<'a> {
-    symbols: &'a SymbolTables,
-    line_no: usize,
-    order: usize,
-    location: i64,
-    allow_future_standalone: bool,
-    expression_text: &'a str,
-}
-
-/// Assembles MIXAL source code into an initialized [`MixState`].
-pub fn assemble(source: &str) -> Result<MixState, AssemblerError> {
-    let parsed = parse_source(source)?;
-    let first_pass = first_pass(&parsed)?;
-    second_pass(&first_pass)
-}
-
-fn parse_source(source: &str) -> Result<Vec<ParsedLine>, AssemblerError> {
-    let mut out = Vec::new();
-    let mut saw_end = false;
-
-    for (line_idx, raw_line) in source.lines().enumerate() {
-        let line_no = line_idx + 1;
-        if saw_end {
-            continue;
-        }
-
-        let line = strip_hash_and_semicolon_comments(raw_line);
-        if line.trim().is_empty() {
-            continue;
-        }
-        if line.starts_with('*') {
-            continue;
-        }
-
-        let parsed = parse_logical_line(line, line_no, out.len())?;
-        if matches!(
-            parsed.kind,
-            LineKind::Directive {
-                directive: Directive::End,
-                ..
-            }
-        ) {
-            saw_end = true;
-        }
-        out.push(parsed);
-    }
-
-    if !saw_end {
-        return Err(asm_syntax(1, "missing mandatory `END` directive"));
-    }
-
-    Ok(out)
-}
-
-fn parse_logical_line(
-    line: &str,
-    line_no: usize,
-    order: usize,
-) -> Result<ParsedLine, AssemblerError> {
-    let (first, rest_after_first) = take_token(line).ok_or_else(|| {
-        asm_syntax(line_no, "line must contain a mnemonic or directive")
-    })?;
-
-    let first_up = first.to_ascii_uppercase();
-    let (label, mnemonic, rest) = if is_opcode_or_directive(&first_up) {
-        (None, first_up, rest_after_first)
-    } else {
-        let (mnemonic_token, rest_after_mnemonic) =
-            take_token(rest_after_first).ok_or_else(|| {
-                asm_syntax(line_no, "missing mnemonic after label")
-            })?;
-        (
-            Some(first_up),
-            mnemonic_token.to_ascii_uppercase(),
-            rest_after_mnemonic,
-        )
-    };
-
-    let operand = parse_operand_text(&mnemonic, rest, line_no)?;
-
-    let kind = if let Some(directive) = parse_directive(&mnemonic) {
-        LineKind::Directive { directive, operand }
-    } else {
-        LineKind::Instruction { mnemonic, operand }
-    };
-
-    Ok(ParsedLine {
-        line_no,
-        order,
-        label,
-        kind,
-    })
-}
-
-fn first_pass(lines: &[ParsedLine]) -> Result<FirstPass, AssemblerError> {
-    let mut items = Vec::new();
-    let mut symbols = SymbolTables::new();
-    let mut location_counter = 0_i64;
-    let mut end_start = None;
-
-    for line in lines {
-        match &line.kind {
-            LineKind::Directive {
-                directive: Directive::Equ,
-                operand,
-            } => {
-                let label = line.label.as_ref().ok_or_else(|| {
-                    asm_syntax(line.line_no, "`EQU` requires a label")
-                })?;
-                let eq_val = eval_w_expression(
-                    operand,
-                    &EvalContext {
-                        symbols: &symbols,
-                        line_no: line.line_no,
-                        order: line.order,
-                        location: location_counter,
-                        allow_future_standalone: false,
-                        expression_text: operand,
-                    },
-                    OperandComponent::WExpr,
-                )?;
-                symbols.define(label, eq_val, line.order, line.line_no)?;
-            }
-            _ => {
-                if let Some(label) = line.label.as_deref() {
-                    symbols.define(
-                        label,
-                        location_counter,
-                        line.order,
-                        line.line_no,
-                    )?;
-                }
-
-                match &line.kind {
-                    LineKind::Instruction { mnemonic, operand } => {
-                        items.push(AsmItem {
-                            line_no: line.line_no,
-                            order: line.order,
-                            location: location_counter,
-                            kind: ItemKind::Instruction {
-                                mnemonic: mnemonic.clone(),
-                                operand: operand.clone(),
-                            },
-                        });
-                        location_counter += 1;
-                    }
-                    LineKind::Directive {
-                        directive: Directive::Orig,
-                        operand,
-                    } => {
-                        let new_location = eval_w_expression(
-                            operand,
-                            &EvalContext {
-                                symbols: &symbols,
-                                line_no: line.line_no,
-                                order: line.order,
-                                location: location_counter,
-                                allow_future_standalone: false,
-                                expression_text: operand,
-                            },
-                            OperandComponent::WExpr,
-                        )?;
-                        ensure_location_in_memory(new_location, line.line_no)?;
-                        location_counter = new_location;
-                    }
-                    LineKind::Directive {
-                        directive: Directive::Con,
-                        operand,
-                    } => {
-                        items.push(AsmItem {
-                            line_no: line.line_no,
-                            order: line.order,
-                            location: location_counter,
-                            kind: ItemKind::Con {
-                                operand: operand.clone(),
-                            },
-                        });
-                        location_counter += 1;
-                    }
-                    LineKind::Directive {
-                        directive: Directive::Alf,
-                        operand,
-                    } => {
-                        items.push(AsmItem {
-                            line_no: line.line_no,
-                            order: line.order,
-                            location: location_counter,
-                            kind: ItemKind::Alf {
-                                operand: operand.clone(),
-                            },
-                        });
-                        location_counter += 1;
-                    }
-                    LineKind::Directive {
-                        directive: Directive::End,
-                        operand,
-                    } => {
-                        let start = eval_w_expression(
-                            operand,
-                            &EvalContext {
-                                symbols: &symbols,
-                                line_no: line.line_no,
-                                order: line.order,
-                                location: location_counter,
-                                allow_future_standalone: false,
-                                expression_text: operand,
-                            },
-                            OperandComponent::WExpr,
-                        )?;
-                        ensure_location_in_memory(start, line.line_no)?;
-                        end_start = Some(start);
-                    }
-                    LineKind::Directive {
-                        directive: Directive::Equ,
-                        ..
-                    } => {}
-                }
-            }
-        }
-    }
-
-    let end_start =
-        end_start.ok_or_else(|| asm_syntax(1, "missing `END` directive"))?;
-
-    Ok(FirstPass {
-        items,
-        symbols,
-        end_start,
-        literal_start: location_counter,
-    })
-}
-
-fn second_pass(first: &FirstPass) -> Result<MixState, AssemblerError> {
+/// Second assembly pass.
+///
+/// Encodes all first-pass items into memory and emits deferred literal words.
+pub(crate) fn second_pass(
+    first: &FirstPass,
+) -> Result<MixState, AssemblerError> {
+    // Pass 2 encodes all queued items and then emits deferred literals.
     let mut state = MixState::blank(DEFAULT_BYTE_SIZE)?;
     let mut literal_entries: Vec<LiteralEntry> = Vec::new();
     let mut next_literal_addr = first.literal_start;
@@ -508,19 +101,7 @@ fn second_pass(first: &FirstPass) -> Result<MixState, AssemblerError> {
     Ok(state)
 }
 
-fn ensure_location_in_memory(
-    location: i64,
-    line_no: usize,
-) -> Result<(), AssemblerError> {
-    if !(0..MIX_MEMORY_SIZE).contains(&location) {
-        return Err(asm_syntax(
-            line_no,
-            &format!("address `{location}` out of MIX memory range"),
-        ));
-    }
-    Ok(())
-}
-
+/// Parses and validates an `ALF` payload into exactly 5 MIX characters.
 fn assemble_alf_word(
     operand: &str,
     line_no: usize,
@@ -535,6 +116,7 @@ fn assemble_alf_word(
     Ok(MixWord::from_signed(value, DEFAULT_BYTE_SIZE))
 }
 
+/// Normalizes `ALF` source operand (quoted or bare) and pads to 5 chars.
 fn parse_alf_text(
     operand: &str,
     line_no: usize,
@@ -567,34 +149,7 @@ fn parse_alf_text(
     Ok(text)
 }
 
-fn parse_operand_text(
-    mnemonic: &str,
-    rest: &str,
-    line_no: usize,
-) -> Result<String, AssemblerError> {
-    let trimmed = rest.trim_start();
-    if trimmed.is_empty() {
-        return Ok(String::new());
-    }
-
-    if mnemonic == "ALF" {
-        if trimmed.starts_with('"') || trimmed.starts_with('\'') {
-            let quote = trimmed.chars().next().unwrap();
-            let end_idx = trimmed[1..].find(quote).ok_or_else(|| {
-                asm_syntax(line_no, "unterminated quoted `ALF` operand")
-            })? + 1;
-            return Ok(trimmed[..=end_idx].to_owned());
-        }
-        let (token, _) = take_token(trimmed)
-            .ok_or_else(|| asm_syntax(line_no, "`ALF` requires an operand"))?;
-        return Ok(token.to_owned());
-    }
-
-    let (token, _) = take_token(trimmed)
-        .ok_or_else(|| asm_syntax(line_no, "invalid operand"))?;
-    Ok(token.to_owned())
-}
-
+/// Converts one mnemonic + operand text into a typed instruction variant.
 fn build_instruction(
     mnemonic: &str,
     operand_text: &str,
@@ -602,6 +157,7 @@ fn build_instruction(
     literal_entries: &mut Vec<LiteralEntry>,
     next_literal_addr: &mut i64,
 ) -> Result<Instruction, AssemblerError> {
+    // Table-style mnemonic dispatch into typed instruction constructors.
     match mnemonic {
         "NOP" => {
             no_operand_instruction(operand_text, ctx.line_no, Instruction::Nop)
@@ -2031,6 +1587,7 @@ fn compare_instruction(
     )
 }
 
+/// Parses and evaluates MIX operand parts into encoded fields.
 fn parse_operand_value(
     operand_text: &str,
     default_field: u8,
@@ -2040,6 +1597,8 @@ fn parse_operand_value(
     literal_entries: &mut Vec<LiteralEntry>,
     next_literal_addr: &mut i64,
 ) -> Result<EvaluatedOperand, AssemblerError> {
+    // Operand grammar handled here:
+    //   address[,index][(field)]
     if operand_text.is_empty() {
         return Ok(EvaluatedOperand {
             address: 0,
@@ -2132,6 +1691,7 @@ fn parse_operand_value(
     })
 }
 
+/// Evaluates the address component, including literal pool allocation.
 fn eval_address_value(
     address_text: &str,
     allow_literal_address: bool,
@@ -2139,6 +1699,8 @@ fn eval_address_value(
     literal_entries: &mut Vec<LiteralEntry>,
     next_literal_addr: &mut i64,
 ) -> Result<i64, AssemblerError> {
+    // Literal constants in address position allocate pool entries immediately
+    // and return their assigned address.
     if allow_literal_address && is_literal_constant(address_text) {
         ensure_location_in_memory(*next_literal_addr, ctx.line_no)?;
         let inner = address_text[1..address_text.len() - 1].trim().to_owned();
@@ -2164,11 +1726,14 @@ fn eval_address_value(
     )
 }
 
-fn eval_w_expression(
+/// Evaluates a MIX w-expression (`expr[(f)]` terms separated by commas).
+pub(crate) fn eval_w_expression(
     text: &str,
     ctx: &EvalContext<'_>,
     component: OperandComponent,
 ) -> Result<i64, AssemblerError> {
+    // A w-expression is a comma-separated sequence of terms, each optionally
+    // carrying its own field spec. Terms are merged by field stores.
     let mut acc = MixWord::ZERO;
     for term in split_top_level_commas(text) {
         let (exp_text, fspec_opt) = split_wexpr_term(term, ctx.line_no)?;
@@ -2203,11 +1768,13 @@ fn eval_w_expression(
     Ok(acc.as_signed_i64(DEFAULT_BYTE_SIZE))
 }
 
+/// Evaluates a scalar expression used by operands and directives.
 fn eval_expression(
     text: &str,
     ctx: &EvalContext<'_>,
     _component: OperandComponent,
 ) -> Result<i64, AssemblerError> {
+    // Simple left-to-right expression parser used by operands/directives.
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err(asm_syntax(ctx.line_no, "empty expression"));
@@ -2293,6 +1860,7 @@ struct ExprParser<'a, 'b> {
 }
 
 impl ExprParser<'_, '_> {
+    // Signed atom parser allows repeated unary +/- prefixes.
     fn parse_signed_atom(&mut self) -> Result<i64, AssemblerError> {
         let mut sign = 1_i64;
         while self.peek_char() == Some('+') || self.peek_char() == Some('-') {
@@ -2410,6 +1978,7 @@ impl ExprParser<'_, '_> {
 }
 
 fn split_top_level_commas(text: &str) -> Vec<&str> {
+    // Split by commas not nested inside parentheses.
     let mut out = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
@@ -2432,6 +2001,7 @@ fn split_wexpr_term<'a>(
     term: &'a str,
     line_no: usize,
 ) -> Result<(&'a str, Option<&'a str>), AssemblerError> {
+    // Splits `expr(fspec)` into `(expr, Some(fspec))`.
     if term.is_empty() {
         return Err(asm_syntax(line_no, "empty term in w-expression"));
     }
@@ -2503,221 +2073,6 @@ fn i64_to_u6(
     Ok(value as u8)
 }
 
-fn take_token(input: &str) -> Option<(&str, &str)> {
-    let trimmed = input.trim_start();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let start_offset = input.len() - trimmed.len();
-    let end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
-    let token = &trimmed[..end];
-    let rest_idx = start_offset + end;
-    Some((token, &input[rest_idx..]))
-}
-
-fn parse_directive(token: &str) -> Option<Directive> {
-    match token {
-        "ORIG" => Some(Directive::Orig),
-        "EQU" => Some(Directive::Equ),
-        "CON" => Some(Directive::Con),
-        "ALF" => Some(Directive::Alf),
-        "END" => Some(Directive::End),
-        _ => None,
-    }
-}
-
-fn is_opcode_or_directive(token: &str) -> bool {
-    parse_directive(token).is_some() || is_opcode(token)
-}
-
-fn is_opcode(token: &str) -> bool {
-    matches!(
-        token,
-        "NOP"
-            | "ADD"
-            | "SUB"
-            | "MUL"
-            | "DIV"
-            | "NUM"
-            | "CHAR"
-            | "HLT"
-            | "SLA"
-            | "SRA"
-            | "SLAX"
-            | "SRAX"
-            | "SLC"
-            | "SRC"
-            | "SLB"
-            | "SRB"
-            | "MOVE"
-            | "LDA"
-            | "LD1"
-            | "LD2"
-            | "LD3"
-            | "LD4"
-            | "LD5"
-            | "LD6"
-            | "LDX"
-            | "LDAN"
-            | "LD1N"
-            | "LD2N"
-            | "LD3N"
-            | "LD4N"
-            | "LD5N"
-            | "LD6N"
-            | "LDXN"
-            | "STA"
-            | "ST1"
-            | "ST2"
-            | "ST3"
-            | "ST4"
-            | "ST5"
-            | "ST6"
-            | "STX"
-            | "STJ"
-            | "STZ"
-            | "JBUS"
-            | "IOC"
-            | "IN"
-            | "OUT"
-            | "JRED"
-            | "JMP"
-            | "JSJ"
-            | "JOV"
-            | "JNOV"
-            | "JL"
-            | "JE"
-            | "JG"
-            | "JGE"
-            | "JNE"
-            | "JLE"
-            | "JAN"
-            | "JAZ"
-            | "JAP"
-            | "JANN"
-            | "JANZ"
-            | "JANP"
-            | "JAE"
-            | "JAO"
-            | "J1N"
-            | "J1Z"
-            | "J1P"
-            | "J1NN"
-            | "J1NZ"
-            | "J1NP"
-            | "J2N"
-            | "J2Z"
-            | "J2P"
-            | "J2NN"
-            | "J2NZ"
-            | "J2NP"
-            | "J3N"
-            | "J3Z"
-            | "J3P"
-            | "J3NN"
-            | "J3NZ"
-            | "J3NP"
-            | "J4N"
-            | "J4Z"
-            | "J4P"
-            | "J4NN"
-            | "J4NZ"
-            | "J4NP"
-            | "J5N"
-            | "J5Z"
-            | "J5P"
-            | "J5NN"
-            | "J5NZ"
-            | "J5NP"
-            | "J6N"
-            | "J6Z"
-            | "J6P"
-            | "J6NN"
-            | "J6NZ"
-            | "J6NP"
-            | "JXN"
-            | "JXZ"
-            | "JXP"
-            | "JXNN"
-            | "JXNZ"
-            | "JXNP"
-            | "JXE"
-            | "JXO"
-            | "INCA"
-            | "DECA"
-            | "ENTA"
-            | "ENNA"
-            | "INC1"
-            | "DEC1"
-            | "ENT1"
-            | "ENN1"
-            | "INC2"
-            | "DEC2"
-            | "ENT2"
-            | "ENN2"
-            | "INC3"
-            | "DEC3"
-            | "ENT3"
-            | "ENN3"
-            | "INC4"
-            | "DEC4"
-            | "ENT4"
-            | "ENN4"
-            | "INC5"
-            | "DEC5"
-            | "ENT5"
-            | "ENN5"
-            | "INC6"
-            | "DEC6"
-            | "ENT6"
-            | "ENN6"
-            | "INCX"
-            | "DECX"
-            | "ENTX"
-            | "ENNX"
-            | "CMPA"
-            | "CMP1"
-            | "CMP2"
-            | "CMP3"
-            | "CMP4"
-            | "CMP5"
-            | "CMP6"
-            | "CMPX"
-    )
-}
-
-fn strip_hash_and_semicolon_comments(line: &str) -> &str {
-    let hash_idx = line.find('#');
-    let semi_idx = line.find(';');
-    match (hash_idx, semi_idx) {
-        (Some(h), Some(s)) => &line[..h.min(s)],
-        (Some(h), None) => &line[..h],
-        (None, Some(s)) => &line[..s],
-        (None, None) => line,
-    }
-}
-
-fn local_h_digit(label: &str) -> Option<u8> {
-    let bytes = label.as_bytes();
-    if bytes.len() == 2 && (b'1'..=b'9').contains(&bytes[0]) && bytes[1] == b'H'
-    {
-        Some(bytes[0] - b'0')
-    } else {
-        None
-    }
-}
-
-fn local_symbol_ref(symbol: &str) -> Option<(u8, char)> {
-    let bytes = symbol.as_bytes();
-    if bytes.len() == 2 && (b'1'..=b'9').contains(&bytes[0]) {
-        let flavor = bytes[1] as char;
-        if matches!(flavor, 'B' | 'F' | 'H') {
-            return Some((bytes[0] - b'0', flavor));
-        }
-    }
-    None
-}
-
 fn is_literal_constant(text: &str) -> bool {
     text.starts_with('=') && text.ends_with('=') && text.len() >= 2
 }
@@ -2730,147 +2085,4 @@ fn is_standalone_symbol_expr(text: &str) -> bool {
     !s.is_empty()
         && s.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         && !s.chars().all(|ch| ch.is_ascii_digit())
-}
-
-fn asm_syntax(line: usize, message: &str) -> AssemblerError {
-    AssemblerError::Syntax {
-        line,
-        message: message.to_owned(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn assembles_simple_program_and_runs() {
-        let source = "LDA 2000\nADD 2001\nSTA 2002\nHLT\nEND 0\n";
-        let mut machine = assemble(source).unwrap();
-        machine.set_memory_word(2000, 2).unwrap();
-        machine.set_memory_word(2001, 3).unwrap();
-
-        while !machine.is_halted() {
-            machine.advance_state().unwrap();
-        }
-
-        assert_eq!(machine.memory_word(2002).unwrap(), 5);
-    }
-
-    #[test]
-    fn supports_index_and_field_operand_parts() {
-        let source = "LDA 100,2(1:3)\nHLT\nEND 0\n";
-        let machine = assemble(source).unwrap();
-        assert!(machine.memory_word(0).unwrap() > 0);
-    }
-
-    #[test]
-    fn rejects_unknown_mnemonics() {
-        let result = assemble("NOTREAL 0\nEND 0\n");
-        assert!(matches!(
-            result,
-            Err(AssemblerError::Syntax { line: 1, .. })
-        ));
-    }
-
-    #[test]
-    fn rejects_fixed_field_override() {
-        let result = assemble("JMP 10(0:1)\nEND 0\n");
-        assert!(matches!(
-            result,
-            Err(AssemblerError::Syntax { line: 1, .. })
-        ));
-    }
-
-    #[test]
-    fn assembles_io_unit_numbers() {
-        let source = "IN 2000(16)\nOUT 2000(18)\nHLT\nEND 0\n";
-        let machine = assemble(source).unwrap();
-        assert!(machine.memory_word(0).unwrap() > 0);
-        assert!(machine.memory_word(1).unwrap() > 0);
-    }
-
-    #[test]
-    fn supports_directives_and_labels() {
-        let source = "START EQU 2000\nORIG START\nL1 LDA VALUE\nHLT\nVALUE CON 7\nEND L1\n";
-        let mut machine = assemble(source).unwrap();
-        while !machine.is_halted() {
-            machine.advance_state().unwrap();
-        }
-        assert_eq!(machine.register_a(), 7);
-    }
-
-    #[test]
-    fn supports_alf_and_literal_constants() {
-        let source = "ORIG 3000\nMSG ALF \"HELLO\"\nLDA =15=\nHLT\nEND 3001\n";
-        let mut machine = assemble(source).unwrap();
-        machine.advance_state().unwrap();
-        assert_eq!(machine.register_a(), 15);
-        assert!(machine.memory_word(3000).unwrap() > 0);
-    }
-
-    #[test]
-    fn supports_local_symbols() {
-        let source = "ORIG 2000\n1H NOP\nJMP 1B\nJMP 3F\n3H HLT\nEND 2001\n";
-        let machine = assemble(source).unwrap();
-        assert!(machine.memory_word(2001).unwrap() > 0);
-    }
-
-    #[test]
-    fn rejects_missing_end() {
-        let result = assemble("HLT\n");
-        assert!(matches!(
-            result,
-            Err(AssemblerError::Syntax { message, .. }) if message.contains("END")
-        ));
-    }
-
-    #[test]
-    fn rejects_overflowing_expressions_without_panicking() {
-        let result = assemble("A EQU 9223372036854775807+1\nHLT\nEND 0\n");
-        assert!(matches!(
-            result,
-            Err(AssemblerError::Syntax { line: 1, message })
-                if message.contains("overflow")
-        ));
-    }
-
-    #[test]
-    fn assembles_complicated_feature_rich_program() {
-        let source = r#"
-* complete MIXAL feature exercise
-A EQU 14/3
-B EQU 1:2
-C EQU 1//64
-START EQU 1200
-ORIG START
-ENTA 0 ; initialize accumulator
-1H INCA 1
-CMPA =3=
-JL 1B
-STA VALUE # save loop result
-JMP 2F
-ORIG *+1
-VALUE CON -A(0:0),B(1:2),C(3:5)
-TEXT ALF "HELLO"
-2H LDA VALUE,1-1(0:5)
-ADD =1=
-STA VALUE
-LDA FUTURE
-JMP DONE
-FUTURE CON 10
-DONE HLT
-END START
-"#;
-
-        let mut machine = assemble(source).unwrap();
-        while !machine.is_halted() {
-            machine.advance_state().unwrap();
-        }
-
-        assert_eq!(machine.register_a(), 10);
-        assert_eq!(machine.memory_word(1207).unwrap(), 4);
-        assert_eq!(machine.memory_word(1216).unwrap(), 3);
-        assert_eq!(machine.memory_word(1217).unwrap(), 1);
-    }
 }
