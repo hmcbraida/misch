@@ -1,4 +1,3 @@
-use crate::MixError;
 use crate::instruction::{
     self, AddrTransferMode, AddrTransferTarget, AddressSpec, CompareTarget,
     Instruction, JumpCondition, LoadTarget, OperandSpec, RegisterJumpCondition,
@@ -6,6 +5,7 @@ use crate::instruction::{
 };
 use crate::io::{CallbackInputDevice, CallbackOutputDevice, DeviceSlot};
 use crate::word::{Comparison, MixHalfWord, MixWord, Sign};
+use crate::MixError;
 
 const MEMORY_SIZE: usize = 4000;
 const DEVICE_COUNT: usize = 21;
@@ -230,7 +230,9 @@ impl MixState {
             return Ok(());
         }
 
-        let instruction_word = self.memory[usize::from(self.ic)];
+        let instruction_addr =
+            self.checked_memory_address(i32::from(self.ic))?;
+        let instruction_word = self.memory[instruction_addr];
         let instruction =
             instruction::Instruction::decode(instruction_word, self.byte_size)?;
         self.ic = self.ic.wrapping_add(1);
@@ -1378,5 +1380,17 @@ mod tests {
         assert_eq!(s.ic, 1);
         s.advance_state().unwrap();
         assert_eq!(s.ic, 300);
+    }
+
+    #[test]
+    fn advance_state_errors_when_instruction_counter_out_of_bounds() {
+        let mut s = machine();
+        s.ic = MEMORY_SIZE as u16;
+
+        let err = s.advance_state().unwrap_err();
+        assert!(matches!(
+            err,
+            MixError::AddressOutOfRange(addr) if addr == MEMORY_SIZE as i32
+        ));
     }
 }
