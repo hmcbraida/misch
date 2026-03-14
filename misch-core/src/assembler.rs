@@ -181,7 +181,6 @@ impl SymbolTables {
             let candidate = match flavor {
                 'B' => defs.iter().rev().find(|d| d.order < usage_order),
                 'F' => defs.iter().find(|d| d.order > usage_order),
-                'H' => defs.iter().rev().find(|d| d.order <= usage_order),
                 _ => None,
             };
             let def = candidate.ok_or_else(|| {
@@ -2791,7 +2790,7 @@ fn local_symbol_ref(symbol: &str) -> Option<(u8, char)> {
     let bytes = symbol.as_bytes();
     if bytes.len() == 2 && (b'1'..=b'9').contains(&bytes[0]) {
         let flavor = bytes[1] as char;
-        if matches!(flavor, 'B' | 'F' | 'H') {
+        if matches!(flavor, 'B' | 'F') {
             return Some((bytes[0] - b'0', flavor));
         }
     }
@@ -2894,6 +2893,17 @@ mod tests {
         let source = "ORIG 2000\n1H NOP\nJMP 1B\nJMP 3F\n3H HLT\nEND 2001\n";
         let machine = assemble(source).unwrap();
         assert!(machine.memory_word(2001).unwrap() > 0);
+    }
+
+    #[test]
+    fn rejects_h_flavor_local_symbol_reference() {
+        let source = "ORIG 2000\n1H NOP\nJMP 1H\nEND 2000\n";
+        let result = assemble(source);
+        assert!(matches!(
+            result,
+            Err(AssemblerError::Syntax { line: 3, message })
+                if message.contains("undefined symbol `1H`")
+        ));
     }
 
     #[test]
