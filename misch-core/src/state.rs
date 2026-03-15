@@ -1,4 +1,3 @@
-use crate::MixError;
 use crate::instruction::{
     self, AddrTransferMode, AddrTransferTarget, AddressSpec, CompareTarget,
     Instruction, JumpCondition, LoadTarget, OperandSpec, RegisterJumpCondition,
@@ -6,6 +5,7 @@ use crate::instruction::{
 };
 use crate::io::{CallbackInputDevice, CallbackOutputDevice, DeviceSlot};
 use crate::word::{Comparison, MixHalfWord, MixWord, Sign};
+use crate::MixError;
 
 const MEMORY_SIZE: usize = 4000;
 const DEVICE_COUNT: usize = 21;
@@ -1302,6 +1302,43 @@ mod tests {
         s.advance_state().unwrap();
         assert_eq!(s.ic, 200);
         assert_eq!(s.r_j.as_signed_i32(64), 1);
+    }
+
+    #[test]
+    fn program_can_self_modify_instruction_memory() {
+        let mut s = machine();
+
+        // Preload register A with the encoded HLT instruction so we can write it
+        // directly into instruction memory.
+        s.r_a = instr(Instruction::Hlt);
+
+        // Program layout:
+        //   0: STA 2   ; overwrite instruction at address 2 with A
+        //   1: JSJ 2   ; jump to the modified instruction
+        //   2: NOP     ; will be replaced by HLT at runtime
+        s.memory[0] = instr(Instruction::Store {
+            source: StoreSource::A,
+            operand: operand(2, 0, 5),
+        });
+        s.memory[1] = instr(Instruction::Jump {
+            addr: address(2, 0),
+            cond: JumpCondition::Jsj,
+        });
+        s.memory[2] = instr(Instruction::Nop);
+
+        // Step 1: mutate code memory.
+        s.advance_state().unwrap();
+        assert_eq!(s.memory[2].bytes, instr(Instruction::Hlt).bytes);
+        assert_eq!(s.memory[2].sign, instr(Instruction::Hlt).sign);
+
+        // Step 2: branch to the patched location.
+        s.advance_state().unwrap();
+        assert_eq!(s.ic, 2);
+        assert!(!s.is_halted());
+
+        // Step 3: execute the patched instruction and halt.
+        s.advance_state().unwrap();
+        assert!(s.is_halted());
     }
 
     #[test]

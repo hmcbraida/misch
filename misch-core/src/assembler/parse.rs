@@ -10,10 +10,11 @@ pub(crate) struct ParsedLine {
 #[derive(Debug, Clone)]
 /// Parsed line category: instruction or assembler directive.
 pub(crate) enum LineKind {
-    Instruction {
-        mnemonic: String,
-        operand: String,
-    },
+    /// Represents a MIX instruction.
+    ///
+    /// The operand may be an arbitrary w-expression.
+    Instruction { mnemonic: String, operand: String },
+    /// Represents an assembly directive, as opposed to an instruction.
     Directive {
         directive: Directive,
         operand: String,

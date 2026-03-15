@@ -1,9 +1,8 @@
 use super::pass1::{FirstPass, ItemKind};
 use super::{
-    AssemblerError, DEFAULT_BYTE_SIZE, EvalContext, OperandComponent,
-    asm_syntax, ensure_location_in_memory,
+    asm_syntax, ensure_location_in_memory, AssemblerError, EvalContext,
+    OperandComponent, DEFAULT_BYTE_SIZE,
 };
-use crate::MixCharError;
 use crate::instruction::{
     AddrTransferMode, AddrTransferTarget, AddressSpec, CompareTarget,
     Instruction, JumpCondition, LoadTarget, OperandSpec, RegisterJumpCondition,
@@ -12,6 +11,7 @@ use crate::instruction::{
 use crate::mixchar::encode_text_to_words;
 use crate::state::MixState;
 use crate::word::MixWord;
+use crate::MixCharError;
 
 #[derive(Debug, Clone)]
 /// Deferred literal allocated during operand parsing (e.g. `=5=`).
@@ -1792,16 +1792,57 @@ fn eval_expression(
     }
 
     if parser.pos != parser.input.len() {
+        let near = expression_near(parser.input, parser.pos);
+        let expr = diagnostic_expression(ctx.expression_text, parser.input);
         return Err(asm_syntax(
             ctx.line_no,
-            &format!(
-                "invalid expression near `{}`",
-                &parser.input[parser.pos..]
-            ),
+            &format!("invalid expression near `{near}` in `{expr}`"),
         ));
     }
 
     Ok(value)
+}
+
+fn diagnostic_expression<'a>(
+    expression_text: &'a str,
+    fallback: &'a str,
+) -> &'a str {
+    if expression_text.is_empty() {
+        fallback
+    } else {
+        expression_text
+    }
+}
+
+fn expression_near(input: &str, pos: usize) -> String {
+    if pos >= input.len() {
+        return "<end>".to_owned();
+    }
+
+    let rest = &input[pos..];
+    if rest.starts_with("//") {
+        return "//".to_owned();
+    }
+
+    let mut chars = rest.chars();
+    let first = chars.next().unwrap_or('\0');
+    if matches!(first, '+' | '-' | '*' | '/' | ':') {
+        return first.to_string();
+    }
+
+    if first.is_ascii_alphanumeric() || first == '_' {
+        let mut end = first.len_utf8();
+        for ch in rest[first.len_utf8()..].chars() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                end += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        return rest[..end].to_owned();
+    }
+
+    first.to_string()
 }
 
 fn apply_binary_op(
@@ -1900,7 +1941,15 @@ impl ExprParser<'_, '_> {
                     .to_owned();
                 self.resolve_symbol(&token)
             }
-            _ => Err(asm_syntax(self.ctx.line_no, "invalid expression atom")),
+            _ => {
+                let near = expression_near(self.input, self.pos);
+                let expr =
+                    diagnostic_expression(self.ctx.expression_text, self.input);
+                Err(asm_syntax(
+                    self.ctx.line_no,
+                    &format!("invalid expression near `{near}` in `{expr}`"),
+                ))
+            }
         }
     }
 
@@ -1944,10 +1993,14 @@ impl ExprParser<'_, '_> {
                     Ok(Some(BinaryOp::Div))
                 }
             }
-            _ => Err(asm_syntax(
-                self.ctx.line_no,
-                &format!("invalid operator `{ch}` in expression"),
-            )),
+            _ => {
+                let expr =
+                    diagnostic_expression(self.ctx.expression_text, self.input);
+                Err(asm_syntax(
+                    self.ctx.line_no,
+                    &format!("invalid operator `{ch}` in expression `{expr}`"),
+                ))
+            }
         }
     }
 

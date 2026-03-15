@@ -1,8 +1,8 @@
 use super::parse::{Directive, LineKind, ParsedLine};
 use super::pass2::eval_w_expression;
 use super::{
-    AssemblerError, EvalContext, OperandComponent, asm_syntax,
-    ensure_location_in_memory,
+    asm_syntax, ensure_location_in_memory, AssemblerError, EvalContext,
+    OperandComponent,
 };
 use std::collections::HashMap;
 

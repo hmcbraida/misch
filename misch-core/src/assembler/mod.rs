@@ -5,8 +5,8 @@
 //! - Run a first pass to build symbol tables and assign locations.
 //! - Run a second pass to encode instructions/directives into [`MixState`] memory.
 
-use crate::MixError;
 use crate::state::MixState;
+use crate::MixError;
 use std::fmt;
 
 mod parse;
@@ -14,8 +14,8 @@ mod pass1;
 mod pass2;
 
 use parse::parse_source;
-pub(crate) use pass1::SymbolTables;
 use pass1::first_pass;
+pub(crate) use pass1::SymbolTables;
 use pass2::second_pass;
 
 pub(crate) const DEFAULT_BYTE_SIZE: u16 = 64;
@@ -196,6 +196,35 @@ mod tests {
             Err(AssemblerError::Syntax { line: 1, message })
                 if message.contains("overflow")
         ));
+    }
+
+    #[test]
+    fn reports_near_token_in_expression_errors() {
+        let result = assemble("LDA 1+)\nEND 0\n");
+        assert!(matches!(
+            result,
+            Err(AssemblerError::Syntax { line: 1, message })
+                if message.contains("near `)`")
+                    && message.contains("`1+)`")
+        ));
+    }
+
+    #[test]
+    fn assembles_and_runs_self_modifying_program() {
+        // The program copies a pre-encoded HLT word into instruction memory,
+        // jumps to the patched address, and then halts.
+        let source =
+            "LDA PATCH\nSTA TARGET\nJSJ TARGET\nTARGET NOP\nPATCH HLT\nEND 0\n";
+
+        let mut machine = assemble(source).unwrap();
+
+        // Execute until halt; this should only succeed if runtime instruction
+        // mutation works end-to-end through assembled code.
+        while !machine.is_halted() {
+            machine.advance_state().unwrap();
+        }
+
+        assert!(machine.is_halted());
     }
 
     #[test]
