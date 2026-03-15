@@ -4,6 +4,8 @@
 is split into a Rust workspace for the emulator/runtime surfaces and a SvelteKit
 frontend.
 
+You can try it out for yourself at <https://hmcbraida.com/misch/>!
+
 <img width="1788" height="879" alt="image" src="https://github.com/user-attachments/assets/976fda46-214a-40ed-a947-c7b09ad86328" />
 
 ## Repository layout
