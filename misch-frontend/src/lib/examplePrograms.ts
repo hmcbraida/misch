@@ -1,26 +1,26 @@
-export type ExampleProgramId = 'echo' | 'primes' | 'vigenere';
+export type ExampleProgramId = "echo" | "primes" | "vigenere";
 
 export type ExampleProgram = {
-	id: ExampleProgramId;
-	label: string;
-	assembly: string;
-	paperTapeInput: string;
+  id: ExampleProgramId;
+  label: string;
+  assembly: string;
+  paperTapeInput: string;
 };
 
 export const EXAMPLE_PROGRAMS: ExampleProgram[] = [
-	{
-		id: 'echo',
-		label: 'Echo',
-		assembly: `IN 2000(16)
+  {
+    id: "echo",
+    label: "Echo",
+    assembly: `IN 2000(16)
 OUT 2000(18)
 HLT
 END 0`,
-		paperTapeInput: 'HELLO'
-	},
-	{
-		id: 'primes',
-		label: 'Primes',
-		assembly: `* Prime printer with double output buffers.
+    paperTapeInput: "HELLO",
+  },
+  {
+    id: "primes",
+    label: "Primes",
+    assembly: `* Prime printer with double output buffers.
 * Reads one 5-char decimal word from paper tape (unit 16),
 * prints that many primes to the line printer (unit 18).
 
@@ -99,12 +99,12 @@ BUF1    CON 0
 BUF2    CON 0
 
         END START`,
-		paperTapeInput: '00017'
-	},
-	{
-		id: 'vigenere',
-		label: 'Vigenere',
-		assembly: `* Vigenere cipher from paper tape to line printer.
+    paperTapeInput: "00017",
+  },
+  {
+    id: "vigenere",
+    label: "Vigenere",
+    assembly: `* Vigenere cipher from paper tape to line printer.
 * Input format on unit 16:
 *   <PASSWORD><spaces-to-next-5-char-block><MESSAGE>
 * Password is assumed < 10 chars and has no spaces.
@@ -292,14 +292,21 @@ KEY8    CON 0
 KEY9    CON 0
 
         END START`,
-		paperTapeInput: 'LEMON     ATTACK AT DAWN. 123'
-	}
+    paperTapeInput: "LEMON     ATTACK AT DAWN. 123",
+  },
 ];
 
-export const EXAMPLE_PROGRAMS_BY_ID: Record<ExampleProgramId, ExampleProgram> = {
-	echo: EXAMPLE_PROGRAMS.find((program) => program.id === 'echo') as ExampleProgram,
-	primes: EXAMPLE_PROGRAMS.find((program) => program.id === 'primes') as ExampleProgram,
-	vigenere: EXAMPLE_PROGRAMS.find((program) => program.id === 'vigenere') as ExampleProgram
-};
+export const EXAMPLE_PROGRAMS_BY_ID: Record<ExampleProgramId, ExampleProgram> =
+  {
+    echo: EXAMPLE_PROGRAMS.find(
+      (program) => program.id === "echo",
+    ) as ExampleProgram,
+    primes: EXAMPLE_PROGRAMS.find(
+      (program) => program.id === "primes",
+    ) as ExampleProgram,
+    vigenere: EXAMPLE_PROGRAMS.find(
+      (program) => program.id === "vigenere",
+    ) as ExampleProgram,
+  };
 
-export const DEFAULT_EXAMPLE_PROGRAM_ID: ExampleProgramId = 'primes';
+export const DEFAULT_EXAMPLE_PROGRAM_ID: ExampleProgramId = "primes";
