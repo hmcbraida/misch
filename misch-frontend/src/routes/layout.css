@@ -1,1 +1,93 @@
 @import 'tailwindcss';
+
+:root,
+[data-theme='light'] {
+	--ui-bg: #f4f0e6;
+	--ui-bg-elevated: #f8f5ef;
+	--ui-surface: rgb(248 245 239 / 72%);
+	--ui-text: #262222;
+	--ui-text-muted: #625b55;
+	--ui-border: #a79d93;
+	--ui-border-strong: #8b7f73;
+	--ui-link: #2c4f64;
+	--ui-link-hover: #183545;
+	--ui-accent: #8a4b2b;
+}
+
+[data-theme='dark'] {
+	--ui-bg: #161918;
+	--ui-bg-elevated: #1e2220;
+	--ui-surface: rgb(30 34 32 / 86%);
+	--ui-text: #ece7db;
+	--ui-text-muted: #b3aca1;
+	--ui-border: #4f5954;
+	--ui-border-strong: #6a7670;
+	--ui-link: #96bbcf;
+	--ui-link-hover: #c5dfed;
+	--ui-accent: #d08963;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme='light']):not([data-theme='dark']) {
+		--ui-bg: #161918;
+		--ui-bg-elevated: #1e2220;
+		--ui-surface: rgb(30 34 32 / 86%);
+		--ui-text: #ece7db;
+		--ui-text-muted: #b3aca1;
+		--ui-border: #4f5954;
+		--ui-border-strong: #6a7670;
+		--ui-link: #96bbcf;
+		--ui-link-hover: #c5dfed;
+		--ui-accent: #d08963;
+	}
+}
+
+@theme inline {
+	--color-bg: var(--ui-bg);
+	--color-bg-elevated: var(--ui-bg-elevated);
+	--color-surface: var(--ui-surface);
+	--color-text: var(--ui-text);
+	--color-text-muted: var(--ui-text-muted);
+	--color-border: var(--ui-border);
+	--color-border-strong: var(--ui-border-strong);
+	--color-link: var(--ui-link);
+	--color-link-hover: var(--ui-link-hover);
+	--color-accent: var(--ui-accent);
+}
+
+html,
+body {
+	background: var(--ui-bg);
+	color: var(--ui-text);
+}
+
+a {
+	color: var(--ui-link);
+}
+
+a:hover {
+	color: var(--ui-link-hover);
+}
+
+.misch-shell {
+	background:
+		radial-gradient(
+			circle at 20% -10%,
+			color-mix(in srgb, var(--ui-link) 18%, transparent) 0%,
+			transparent 48%
+		),
+		radial-gradient(
+			circle at 95% 0%,
+			color-mix(in srgb, var(--ui-border) 26%, transparent) 0%,
+			transparent 28%
+		),
+		linear-gradient(180deg, var(--ui-bg-elevated) 0%, var(--ui-bg) 100%);
+}
+
+.misch-header {
+	box-shadow: 0 6px 18px -14px color-mix(in srgb, var(--ui-text) 34%, transparent);
+}
+
+.misch-run-button {
+	box-shadow: 0 8px 18px -12px color-mix(in srgb, var(--ui-link) 82%, transparent);
+}
