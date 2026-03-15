@@ -1,4 +1,4 @@
-import { SessionsClient } from "$lib/api/sessionsClient";
+import type { SessionsClient } from "$lib/api/sessionsClient";
 
 type ProgramExecutionConfig = {
   inputUnit: number;

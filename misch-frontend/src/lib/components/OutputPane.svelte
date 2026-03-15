@@ -1,5 +1,5 @@
 <script lang="ts">
-let { outputText }: { outputText: string } = $props();
+const { outputText }: { outputText: string } = $props();
 </script>
 
 <section

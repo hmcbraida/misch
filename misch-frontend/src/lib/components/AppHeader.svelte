@@ -15,7 +15,7 @@ type AppHeaderProps = {
   onRunProgram: () => void;
 };
 
-let {
+const {
   examplePrograms,
   selectedExampleId,
   isMounted,

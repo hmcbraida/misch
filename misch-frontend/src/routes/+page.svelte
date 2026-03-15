@@ -1,9 +1,9 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
 import { env } from "$env/dynamic/public";
+import { SessionsClient } from "$lib/api/sessionsClient";
 import AppHeader from "$lib/components/AppHeader.svelte";
 import WorkspaceLayout from "$lib/components/WorkspaceLayout.svelte";
-import { SessionsClient } from "$lib/api/sessionsClient";
 import {
   DEFAULT_EXAMPLE_PROGRAM_ID,
   EXAMPLE_PROGRAMS,
@@ -12,7 +12,7 @@ import {
 import { ExampleProgramService } from "$lib/services/exampleProgramService";
 import { ProgramExecutionService } from "$lib/services/programExecutionService";
 import { SplitPaneDragService } from "$lib/services/splitPaneDragService";
-import { ThemeService, type Theme } from "$lib/services/themeService";
+import { type Theme, ThemeService } from "$lib/services/themeService";
 
 type UiStatus = "idle" | "running" | "success" | "error";
 
@@ -174,8 +174,8 @@ async function runProgram(): Promise<void> {
 			lineWriterOutput={lineWriterOutput}
 			onStartVerticalDrag={() => splitPaneDragService.startDrag('vertical')}
 			onStartHorizontalDrag={() => splitPaneDragService.startDrag('horizontal')}
-			onWorkspacePaneChange={(element) => splitPaneDragService.setWorkspacePane(element)}
-			onEditorsPaneChange={(element) => splitPaneDragService.setEditorsPane(element)}
+			onWorkspacePaneChange={(element: HTMLDivElement | null) => splitPaneDragService.setWorkspacePane(element)}
+			onEditorsPaneChange={(element: HTMLDivElement | null) => splitPaneDragService.setEditorsPane(element)}
 		/>
 	</div>
 </div>
