@@ -1,42 +1,60 @@
-# sv
+# misch-frontend
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+SvelteKit for the Misch simulator UI.
 
-## Creating a project
+## Project structure
 
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
+```text
+misch-frontend/
+|- src/
+|  |- app.html                    # HTML shell template
+|  |- app.d.ts                    # app-level TypeScript declarations
+|  |- routes/
+|  |  |- +layout.svelte           # global layout wrapper
+|  |  |- +layout.ts               # layout-level setup/data
+|  |  |- +page.svelte             # main simulator page
+|  |  |- layout.css               # app-wide styling tokens and base styles
+|  |- lib/
+|     |- api/
+|     |  |- sessionsClient.ts     # backend session API client
+|     |- components/
+|     |  |- AppHeader.svelte      # top bar controls and status
+|     |  |- WorkspaceLayout.svelte# split-pane workspace container
+|     |  |- EditorPane.svelte     # editor/input pane
+|     |  |- OutputPane.svelte     # output display pane
+|     |- services/
+|     |  |- programExecutionService.ts # run program flow orchestration
+|     |  |- splitPaneDragService.ts    # pane resize drag behavior
+|     |  |- exampleProgramService.ts   # example program selection logic
+|     |  |- themeService.ts            # light/dark theme persistence
+|     |- examplePrograms.ts       # bundled sample programs
+|     |- assets/
+|     |  |- favicon.svg           # app icon source
+|     |- index.ts                 # library exports
+|- static/
+|  |- robots.txt                  # static public asset
+|- svelte.config.js               # SvelteKit + static adapter config
+|- vite.config.ts                 # Vite config and backend proxy setup
+|- tsconfig.json                  # TypeScript config
+|- biome.json                     # formatter/lint config
+|- package.json                   # scripts and dependencies
+|- .env.example                   # environment variable template
+|- build/                         # production build output (generated)
+|- .svelte-kit/                   # SvelteKit generated artifacts
+|- node_modules/                  # installed dependencies
 ```
 
-To recreate this project with the same configuration:
+## Scripts
 
 ```sh
-# recreate this project
-bun x sv@0.12.6 create --template minimal --types ts --add tailwindcss="plugins:none" --install bun misch-frontend
+bun run dev       # start local dev server
+bun run build     # create production build
+bun run preview   # preview production build locally
+bun run check     # run Svelte + TypeScript checks
 ```
 
-## Developing
+## Notes
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
-
-## Building
-
-To create a production version of your app:
-
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+- During local development, API routes are proxied to <http://127.0.0.1:8000>
+  in `vite.config.ts`.
+- Set `PUBLIC_API_BASE` to override the default API base path used by the app.
