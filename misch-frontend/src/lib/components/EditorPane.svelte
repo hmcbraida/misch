@@ -1,11 +1,11 @@
 <script lang="ts">
-	let {
-		title,
-		value = $bindable()
-	}: {
-		title: string;
-		value: string;
-	} = $props();
+let {
+  title,
+  value = $bindable(),
+}: {
+  title: string;
+  value: string;
+} = $props();
 </script>
 
 <section class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border border-border bg-surface">

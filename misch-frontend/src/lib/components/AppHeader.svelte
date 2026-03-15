@@ -1,32 +1,32 @@
 <script lang="ts">
-	import type { ExampleProgram, ExampleProgramId } from '$lib/examplePrograms';
-	import type { Theme } from '$lib/services/themeService';
+import type { ExampleProgram, ExampleProgramId } from "$lib/examplePrograms";
+import type { Theme } from "$lib/services/themeService";
 
-	type AppHeaderProps = {
-		examplePrograms: ExampleProgram[];
-		selectedExampleId: ExampleProgramId | 'custom';
-		isMounted: boolean;
-		theme: Theme;
-		isRunning: boolean;
-		statusText: string;
-		statusClass: string;
-		onExampleProgramChange: (event: Event) => void;
-		onToggleTheme: () => void;
-		onRunProgram: () => void;
-	};
+type AppHeaderProps = {
+  examplePrograms: ExampleProgram[];
+  selectedExampleId: ExampleProgramId | "custom";
+  isMounted: boolean;
+  theme: Theme;
+  isRunning: boolean;
+  statusText: string;
+  statusClass: string;
+  onExampleProgramChange: (event: Event) => void;
+  onToggleTheme: () => void;
+  onRunProgram: () => void;
+};
 
-	let {
-		examplePrograms,
-		selectedExampleId,
-		isMounted,
-		theme,
-		isRunning,
-		statusText,
-		statusClass,
-		onExampleProgramChange,
-		onToggleTheme,
-		onRunProgram
-	}: AppHeaderProps = $props();
+let {
+  examplePrograms,
+  selectedExampleId,
+  isMounted,
+  theme,
+  isRunning,
+  statusText,
+  statusClass,
+  onExampleProgramChange,
+  onToggleTheme,
+  onRunProgram,
+}: AppHeaderProps = $props();
 </script>
 
 <header

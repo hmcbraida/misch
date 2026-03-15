@@ -1,41 +1,41 @@
 <script lang="ts">
-	import EditorPane from '$lib/components/EditorPane.svelte';
-	import OutputPane from '$lib/components/OutputPane.svelte';
+import EditorPane from "$lib/components/EditorPane.svelte";
+import OutputPane from "$lib/components/OutputPane.svelte";
 
-	type WorkspaceLayoutProps = {
-		topPanePercent: number;
-		leftPanePercent: number;
-		assembly: string;
-		paperTapeInput: string;
-		lineWriterOutput: string;
-		onStartVerticalDrag: () => void;
-		onStartHorizontalDrag: () => void;
-		onWorkspacePaneChange: (element: HTMLDivElement | null) => void;
-		onEditorsPaneChange: (element: HTMLDivElement | null) => void;
-	};
+type WorkspaceLayoutProps = {
+  topPanePercent: number;
+  leftPanePercent: number;
+  assembly: string;
+  paperTapeInput: string;
+  lineWriterOutput: string;
+  onStartVerticalDrag: () => void;
+  onStartHorizontalDrag: () => void;
+  onWorkspacePaneChange: (element: HTMLDivElement | null) => void;
+  onEditorsPaneChange: (element: HTMLDivElement | null) => void;
+};
 
-	let {
-		topPanePercent,
-		leftPanePercent,
-		assembly = $bindable(),
-		paperTapeInput = $bindable(),
-		lineWriterOutput,
-		onStartVerticalDrag,
-		onStartHorizontalDrag,
-		onWorkspacePaneChange,
-		onEditorsPaneChange
-	}: WorkspaceLayoutProps = $props();
+let {
+  topPanePercent,
+  leftPanePercent,
+  assembly = $bindable(),
+  paperTapeInput = $bindable(),
+  lineWriterOutput,
+  onStartVerticalDrag,
+  onStartHorizontalDrag,
+  onWorkspacePaneChange,
+  onEditorsPaneChange,
+}: WorkspaceLayoutProps = $props();
 
-	let workspacePane: HTMLDivElement | null = null;
-	let editorsPane: HTMLDivElement | null = null;
+let workspacePane: HTMLDivElement | null = null;
+let editorsPane: HTMLDivElement | null = null;
 
-	$effect(() => {
-		onWorkspacePaneChange(workspacePane);
-	});
+$effect(() => {
+  onWorkspacePaneChange(workspacePane);
+});
 
-	$effect(() => {
-		onEditorsPaneChange(editorsPane);
-	});
+$effect(() => {
+  onEditorsPaneChange(editorsPane);
+});
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col" bind:this={workspacePane}>
