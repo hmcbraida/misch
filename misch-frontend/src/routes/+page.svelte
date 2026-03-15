@@ -333,9 +333,13 @@
 		class="mx-auto flex h-full min-h-0 w-full max-w-[1400px] flex-col gap-3 p-3 font-['Avenir_Next','Segoe_UI','Gill_Sans',sans-serif] md:p-4"
 	>
 		<header
-			class="misch-header flex flex-col gap-2 rounded-none border border-border bg-surface px-4 py-3 shadow-sm backdrop-blur-sm md:flex-row md:items-center md:justify-between"
+			class="misch-header flex flex-col gap-2 rounded-none border border-border bg-surface px-4 py-3 shadow-sm backdrop-blur-sm md:flex-row md:items-start md:justify-between"
 		>
-			<h1 class="m-0 text-xl uppercase tracking-[0.08em] md:text-2xl">Misch</h1>
+			<div>
+				<h1 class="m-0 text-xl uppercase tracking-[0.08em] md:text-2xl">Misch</h1>
+				<p class="py-1">A MIX emulator.</p>
+				<p class="py-1"><a href="https://github.com/hmcbraida/misch">Source code</a></p>
+			</div>
 			<div class="flex flex-wrap items-center justify-end gap-2">
 				<div class="flex items-center gap-2">
 					<label class="text-xs font-semibold uppercase tracking-[0.04em] text-text-muted" for="example-program">
