@@ -72,15 +72,8 @@ export class ProgramExecutionService {
 		}
 
 		const wrappedLines: string[] = [];
-		for (const line of text.split('\n')) {
-			if (line.length === 0) {
-				wrappedLines.push('');
-				continue;
-			}
-
-			for (let i = 0; i < line.length; i += this.config.lineWrap) {
-				wrappedLines.push(line.slice(i, i + this.config.lineWrap));
-			}
+		for (let i = 0; i < text.length; i += this.config.lineWrap) {
+			wrappedLines.push(text.slice(i, i + this.config.lineWrap));
 		}
 
 		return wrappedLines.join('\n');
