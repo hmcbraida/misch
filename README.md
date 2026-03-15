@@ -4,8 +4,7 @@
 is split into a Rust workspace for the emulator/runtime surfaces and a SvelteKit
 frontend.
 
-<img width="1876" height="922" alt="image" src="https://github.com/user-attachments/assets/d61784ef-2799-4f36-b839-b0b0a5d4f365" />
-
+<img width="1788" height="879" alt="image" src="https://github.com/user-attachments/assets/976fda46-214a-40ed-a947-c7b09ad86328" />
 
 ## Repository layout
 
